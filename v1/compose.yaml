@@ -1,0 +1,9 @@
+services:
+  goclipboard:
+    build: .
+    container_name: goclipboard
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      PORT: "8080"

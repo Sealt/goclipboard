@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GoClipboard</title>
+    <!-- bump ?v= when static assets change so CF/browser don't mix old JS with new HTML -->
+    <link rel="stylesheet" href="/static/styles.css?v=20260714b">
+  </head>
+  <body>
+    <main class="app">
+      <header class="chrome">
+        <!-- Row 1: brand/path | status · controls (stacked) -->
+        <div class="top-row">
+          <div class="brand">
+            <p class="brand-name">GoClipboard</p>
+            <h1 id="roomTitle" class="path">/</h1>
+          </div>
+
+          <div class="top-right">
+            <!-- Layer 1: status -->
+            <div class="meta">
+              <span id="expiresText">尚未保存</span>
+            </div>
+
+            <!-- Layer 2: controls -->
+            <div class="top-controls">
+              <label class="ttl-field">
+                <span class="ttl-lab">TTL</span>
+                <div class="ttl-group">
+                  <input id="ttlValue" type="number" min="1" inputmode="numeric" value="1" aria-label="TTL 数值">
+                  <select id="ttlUnit" aria-label="TTL 单位">
+                    <option value="60">分钟</option>
+                    <option value="3600" selected>小时</option>
+                    <option value="86400">天</option>
+                  </select>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Row 2: peers (scroll) · status · dots (pinned right) -->
+        <div class="presence-row" id="presenceRow">
+          <div class="peer-tabs" id="peerTabs" aria-label="在线用户"></div>
+          <div class="presence-end">
+            <p id="status" class="status" role="status" aria-live="polite" data-tone="err">error</p>
+            <span class="dots" aria-hidden="true">
+              <span id="dotUp" class="dot dot-up" title="发送"></span>
+              <span id="dotDown" class="dot dot-down" title="接收"></span>
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <div class="editor-wrapper">
+        <textarea id="content" spellcheck="false" placeholder="粘贴或输入文本，内容会自动保存 · 开启上传后可粘贴/拖入文件"></textarea>
+        <div id="cursorLayer" class="cursor-layer" aria-hidden="true"></div>
+        <div id="cursorMirror" class="cursor-mirror" aria-hidden="true"></div>
+      </div>
+
+      <!-- Hidden when empty; only lists existing files -->
+      <section id="filesPanel" class="files-panel" aria-label="文件" hidden>
+        <div class="files-header">
+          <h2 class="files-title">文件</h2>
+          <span id="filesCount" class="files-count">0</span>
+          <p id="filesStatus" class="files-status" role="status" aria-live="polite"></p>
+        </div>
+        <ul id="fileList" class="file-list"></ul>
+      </section>
+    </main>
+
+    <!-- Password dialog for file upload / download / delete -->
+    <div id="passwordModal" class="modal" hidden>
+      <div class="modal-backdrop" data-modal-dismiss></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <h3 id="modalTitle" class="modal-title">输入密码</h3>
+        <p id="modalHint" class="modal-hint"></p>
+        <ul id="modalFileNames" class="modal-files"></ul>
+        <label class="modal-field">
+          <span id="modalPasswordLab" class="modal-lab">密码</span>
+          <input id="modalPassword" type="password" autocomplete="current-password" placeholder="密码">
+        </label>
+        <p id="modalError" class="modal-error" role="alert"></p>
+        <div class="modal-actions">
+          <button id="modalCancel" type="button" class="ghost">取消</button>
+          <button id="modalConfirm" type="button">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/crdt.js?v=20260714b" defer></script>
+    <script src="/static/app.js?v=20260714b" defer></script>
+  </body>
+</html>
