@@ -32,8 +32,11 @@ type ClipboardResponse struct {
 type SaveRequest struct {
 	Content    string `json:"content"`
 	TTLSeconds int64  `json:"ttlSeconds"`
-	// BaseVersion is accepted for older clients but ignored (LWW replace, no OCC).
-	BaseVersion int64  `json:"baseVersion,omitempty"`
+	// BaseVersion > 0 requests optimistic concurrency: the save is rejected
+	// with 409 (plus current state) unless the stored version still matches,
+	// so offline/REST clients can merge instead of blindly overwriting.
+	// 0 keeps the legacy unconditional LWW replace.
+	BaseVersion int64 `json:"baseVersion,omitempty"`
 	ClientID    string `json:"clientId,omitempty"`
 }
 

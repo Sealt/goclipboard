@@ -242,10 +242,10 @@ func TestApplyOpsConcurrentMerge(t *testing.T) {
 	opsA := []crdt.Op{{Op: crdt.OpInsert, ID: "a:2", After: parent, Ch: "A"}}
 	opsB := []crdt.Op{{Op: crdt.OpInsert, ID: "b:2", After: parent, Ch: "B"}}
 
-	if _, err := st.ApplyOps("room", opsA, 0, "a"); err != nil {
+	if _, _, err := st.ApplyOps("room", opsA, 0, "a"); err != nil {
 		t.Fatal(err)
 	}
-	item, err := st.ApplyOps("room", opsB, 0, "b")
+	item, _, err := st.ApplyOps("room", opsB, 0, "b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestApplyOpsIdempotentNoVersionBump(t *testing.T) {
 	mustSave(t, st, "room", "z", time.Hour, "s")
 	op := []crdt.Op{{Op: crdt.OpInsert, ID: "s:1", After: "", Ch: "z"}}
 	// s:1 already exists from BuildFromString
-	item, err := st.ApplyOps("room", op, 0, "s")
+	item, _, err := st.ApplyOps("room", op, 0, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestApplyOpsRespectsMemoryLimit(t *testing.T) {
 	for clock := int64(2); clock < 50; clock++ {
 		id := crdt.FormatID("a", clock)
 		ops := []crdt.Op{{Op: crdt.OpInsert, ID: id, After: after, Ch: "x"}}
-		_, err := st.ApplyOps("room", ops, 0, "a")
+		_, _, err := st.ApplyOps("room", ops, 0, "a")
 		if errors.Is(err, ErrMemoryLimit) {
 			hit = true
 			break
@@ -389,5 +389,103 @@ func TestApplyOpsRespectsMemoryLimit(t *testing.T) {
 	}
 	if !hit {
 		t.Fatal("expected ErrMemoryLimit from ApplyOps growth")
+	}
+}
+
+func TestApplyOpsTTLChangeBumpsVersion(t *testing.T) {
+	st := New()
+	mustSave(t, st, "room", "z", time.Hour, "s")
+
+	// Same TTL: pure refresh, no version bump.
+	item, changed, err := st.ApplyOps("room", nil, time.Hour, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || item.Version != 1 {
+		t.Fatalf("refresh: changed=%v version=%d, want false/1", changed, item.Version)
+	}
+
+	// Different TTL: version bump so WS subscribers rebroadcast expiry.
+	item, changed, err = st.ApplyOps("room", nil, 2*time.Hour, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || item.Version != 2 {
+		t.Fatalf("ttl change: changed=%v version=%d, want false/2", changed, item.Version)
+	}
+	if item.TTL != 2*time.Hour {
+		t.Fatalf("ttl = %v, want 2h", item.TTL)
+	}
+}
+
+func TestApplyOpsEmptyBatchCreatesRoom(t *testing.T) {
+	st := New()
+	item, changed, err := st.ApplyOps("fresh", nil, time.Hour, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || item.Version != 1 || item.Content != "" {
+		t.Fatalf("got changed=%v version=%d content=%q", changed, item.Version, item.Content)
+	}
+	if _, ok := st.Get("fresh"); !ok {
+		t.Fatal("room not created")
+	}
+}
+
+func TestApplyOpsReportsContentChanged(t *testing.T) {
+	st := New()
+	mustSave(t, st, "room", "z", time.Hour, "s")
+	op := []crdt.Op{{Op: crdt.OpInsert, ID: "a:2", After: "s:1", Ch: "!"}}
+
+	item, changed, err := st.ApplyOps("room", op, 0, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || item.Version != 2 {
+		t.Fatalf("first apply: changed=%v version=%d, want true/2", changed, item.Version)
+	}
+
+	// Re-applying the same batch (client resend after ack loss) is a no-op.
+	item, changed, err = st.ApplyOps("room", op, 0, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || item.Version != 2 {
+		t.Fatalf("resend: changed=%v version=%d, want false/2", changed, item.Version)
+	}
+}
+
+func TestSaveWithBaseConflict(t *testing.T) {
+	st := New()
+	mustSave(t, st, "room", "v1", time.Hour, "a") // version 1
+	mustSave(t, st, "room", "v2", time.Hour, "b") // version 2
+
+	// Stale base → conflict, nothing written.
+	_, err := st.SaveWithBase("room", "stomp", time.Hour, "a", 1)
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("err = %v, want ErrVersionConflict", err)
+	}
+	got, _ := st.Get("room")
+	if got.Content != "v2" {
+		t.Fatalf("content = %q, want v2 untouched", got.Content)
+	}
+
+	// Matching base → accepted.
+	item, err := st.SaveWithBase("room", "v3", time.Hour, "a", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Content != "v3" || item.Version != 3 {
+		t.Fatalf("item = %q v%d, want v3/3", item.Content, item.Version)
+	}
+
+	// Base on a missing room → conflict (room may have expired).
+	if _, err := st.SaveWithBase("other", "x", time.Hour, "a", 5); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("missing room err = %v, want ErrVersionConflict", err)
+	}
+
+	// baseVersion 0 keeps legacy unconditional LWW.
+	if _, err := st.SaveWithBase("room", "v4", time.Hour, "c", 0); err != nil {
+		t.Fatalf("legacy save: %v", err)
 	}
 }

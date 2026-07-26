@@ -28,6 +28,7 @@ var (
 	ErrContentTooLarge = errors.New("content exceeds 1 MiB limit")
 	ErrTooManyRooms    = errors.New("server at capacity: too many clipboards")
 	ErrMemoryLimit     = errors.New("server at capacity: memory limit")
+	ErrVersionConflict = errors.New("version conflict")
 )
 
 type Store struct {
@@ -106,6 +107,14 @@ func (s *Store) Get(key string) (model.Clipboard, bool) {
 // Identical content+TTL refreshes expiry without bumping version.
 // updatedBy is used as the CRDT site when rebuilding the document.
 func (s *Store) Save(key, content string, ttl time.Duration, updatedBy string) (model.Clipboard, error) {
+	return s.SaveWithBase(key, content, ttl, updatedBy, 0)
+}
+
+// SaveWithBase is Save with optimistic concurrency: when baseVersion > 0 the
+// replace only succeeds if the stored version still equals baseVersion,
+// otherwise ErrVersionConflict is returned so the caller can merge and retry.
+// baseVersion <= 0 keeps the unconditional LWW behavior.
+func (s *Store) SaveWithBase(key, content string, ttl time.Duration, updatedBy string, baseVersion int64) (model.Clipboard, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -115,6 +124,12 @@ func (s *Store) Save(key, content string, ttl time.Duration, updatedBy string) (
 
 	now := s.now()
 	current, exists := s.getLiveLocked(key, now)
+
+	if baseVersion > 0 {
+		if !exists || current.Version != baseVersion {
+			return model.Clipboard{}, ErrVersionConflict
+		}
+	}
 
 	if exists && current.Content == content && current.TTL == ttl {
 		current.ExpiresAt = now.Add(ttl)
@@ -164,8 +179,12 @@ func (s *Store) Save(key, content string, ttl time.Duration, updatedBy string) (
 
 // ApplyOps integrates a CRDT op batch into the room document.
 // If ttl > 0, the room TTL is updated; otherwise the existing TTL is kept
-// (new rooms require ttl > 0).
-func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy string) (model.Clipboard, error) {
+// (new rooms require ttl > 0). An empty batch is a TTL update/refresh.
+// The bool result reports whether the batch changed document content
+// (false for idempotent re-applies and TTL-only updates).
+// A TTL change on unchanged content still bumps the version so WS
+// subscribers rebroadcast the new expiry.
+func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy string) (model.Clipboard, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -175,6 +194,7 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 	var doc *crdt.Doc
 	var version int64
 	var curTTL time.Duration
+	ttlChanged := false
 
 	if exists {
 		doc = current.Doc.Clone()
@@ -184,23 +204,28 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		doc = crdt.NewDoc()
 		version = 0
 		if ttl <= 0 {
-			return model.Clipboard{}, fmt.Errorf("ttlSeconds required for new clipboard")
+			return model.Clipboard{}, false, fmt.Errorf("ttlSeconds required for new clipboard")
 		}
 		curTTL = ttl
 	}
-	if ttl > 0 {
+	if ttl > 0 && ttl != curTTL {
 		curTTL = ttl
+		ttlChanged = true
 	}
 
 	// Apply on a working copy so failures do not corrupt stored state.
 	working := doc.Clone()
-	changed, err := working.ApplyBatch(ops)
-	if err != nil {
-		return model.Clipboard{}, err
+	changed := false
+	if len(ops) > 0 {
+		var err error
+		changed, err = working.ApplyBatch(ops)
+		if err != nil {
+			return model.Clipboard{}, false, err
+		}
 	}
 	content := working.Materialize()
 	if len(content) > MaxContentBytes {
-		return model.Clipboard{}, ErrContentTooLarge
+		return model.Clipboard{}, false, ErrContentTooLarge
 	}
 
 	newBytes := estimateBytes(content, working.Len())
@@ -211,21 +236,41 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 
 	if !changed {
 		if !exists {
-			return model.Clipboard{}, fmt.Errorf("no effect on empty clipboard")
+			if len(ops) > 0 {
+				return model.Clipboard{}, false, fmt.Errorf("no effect on empty clipboard")
+			}
+			// TTL-only touch on a missing room: create it empty.
+			if err := s.canAcceptLocked(true, 0, newBytes); err != nil {
+				return model.Clipboard{}, false, err
+			}
+			item := model.Clipboard{
+				Doc:       working,
+				Content:   content,
+				TTL:       curTTL,
+				ExpiresAt: now.Add(curTTL),
+				Version:   1,
+				UpdatedAt: now,
+				UpdatedBy: updatedBy,
+			}
+			s.putLocked(key, item, newBytes)
+			return cloneClipboard(item), false, nil
 		}
-		// TTL refresh only — size unchanged.
+		// TTL refresh / idempotent re-apply — size unchanged.
 		current.ExpiresAt = now.Add(curTTL)
 		current.TTL = curTTL
 		current.UpdatedAt = now
+		if ttlChanged {
+			current.Version++
+		}
 		if updatedBy != "" {
 			current.UpdatedBy = updatedBy
 		}
 		s.items[key] = current
-		return cloneClipboard(current), nil
+		return cloneClipboard(current), false, nil
 	}
 
 	if err := s.canAcceptLocked(!exists, oldBytes, newBytes); err != nil {
-		return model.Clipboard{}, err
+		return model.Clipboard{}, false, err
 	}
 
 	item := model.Clipboard{
@@ -238,7 +283,7 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		UpdatedBy: updatedBy,
 	}
 	s.putLocked(key, item, newBytes)
-	return cloneClipboard(item), nil
+	return cloneClipboard(item), true, nil
 }
 
 func (s *Store) getLiveLocked(key string, now time.Time) (model.Clipboard, bool) {

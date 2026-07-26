@@ -153,12 +153,19 @@
   var doc = new CRDT.Doc();
   var localClock = 0;
   var knownVersion = 0;
-  var pendingOps = []; // unsent / unacked local ops
+  var pendingOps = []; // local ops not yet acked by the server
+  var sentBatches = {}; // seq -> { ids: {opId:true}, at: ms } awaiting ack
+  var nextSeq = 1;
+  var ackTimeoutMs = 5000;
+  var lastSyncedText = ""; // server text at knownVersion (3-way merge base)
   var flushTimer = 0;
   var flushDelayMs = 60;
   var putFallbackTimer = 0;
+  var putFailures = 0;
+  var putInFlight = false;
   var applyingRemote = false;
   var lastExpiresAt = null;
+  var syncRequestedAt = 0;
 
   var cursorTimer = 0;
   var cursorDelayMs = 80;
@@ -170,8 +177,13 @@
   var remoteCursors = {};
   var socket = null;
   var reconnectTimer = 0;
+  var reconnectAttempts = 0;
   var intentionalClose = false;
   var connected = false;
+  var lastMsgAt = 0; // liveness: server pushes presence every ~5s
+  var msgStaleMs = 15000;
+  var restPollTimer = 0;
+  var restPollMs = 4000;
   var trafficUpTimer = 0;
   var trafficDownTimer = 0;
   var fileUploadEnabled = false;
@@ -249,22 +261,26 @@
       ws = new WebSocket(url);
     } catch (e) {
       setStatus("error");
-      reconnectTimer = window.setTimeout(connectWS, 2000);
+      scheduleReconnect();
       return;
     }
     socket = ws;
 
     ws.onopen = function () {
       if (socket !== ws) return;
+      reconnectAttempts = 0;
+      stopRestPoll();
+      lastMsgAt = Date.now();
       setConnected(true);
       setIdleStatus();
       scheduleCursorSend();
       startPresenceHeartbeat();
-      // Local draft will be re-diffed when state arrives.
+      // Unacked local ops are replayed when the initial state arrives.
     };
 
     ws.onmessage = function (event) {
       if (socket !== ws) return;
+      lastMsgAt = Date.now();
       pulseTraffic("down");
 
       var msg;
@@ -282,6 +298,10 @@
       }
       if (msg.type === "ops") {
         handleRemoteOps(msg);
+        return;
+      }
+      if (msg.type === "ack") {
+        handleAck(msg);
         return;
       }
       if (msg.type === "files") {
@@ -302,6 +322,9 @@
       if (socket !== ws) return;
       socket = null;
       stopPresenceHeartbeat();
+      // Batches in flight have unknown fate; their ops stay in pendingOps and
+      // are replayed onto the state snapshot after reconnect.
+      sentBatches = {};
       remoteCursors = {};
       renderCursors();
       setConnected(false);
@@ -310,20 +333,61 @@
       if (intentionalClose) {
         return;
       }
-      reconnectTimer = window.setTimeout(connectWS, 2000);
+      scheduleReconnect();
     };
+  }
+
+  function scheduleReconnect() {
+    reconnectAttempts++;
+    // Exponential backoff with jitter: 1s, 2s, 4s, 8s, 15s cap.
+    var delay = Math.min(15000, 1000 * Math.pow(2, Math.min(reconnectAttempts - 1, 4))) +
+      Math.floor(Math.random() * 400);
+    if (reconnectAttempts >= 2) {
+      // WS looks unusable (blocked proxy / long outage): sync via REST too.
+      startRestPoll();
+    }
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = window.setTimeout(connectWS, delay);
+  }
+
+  function forceReconnect() {
+    if (socket) {
+      try {
+        socket.close();
+      } catch (e) {
+        // ignore
+      }
+    }
   }
 
   function startPresenceHeartbeat() {
     stopPresenceHeartbeat();
     presenceHeartbeatTimer = window.setInterval(function () {
       if (!connected) return;
+      if (socketLooksDead()) {
+        // Half-open TCP: the browser still reports OPEN but nothing flows.
+        forceReconnect();
+        return;
+      }
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
       sendCursorPosition(true);
     }, presenceHeartbeatMs);
     presencePruneTimer = window.setInterval(pruneStalePeers, presencePruneMs);
+  }
+
+  // The server pushes presence every ~5s and acks every op batch; silence on
+  // either channel means the connection is dead even if readyState says OPEN.
+  function socketLooksDead() {
+    var now = Date.now();
+    if (lastMsgAt && now - lastMsgAt > msgStaleMs) return true;
+    var seqs = Object.keys(sentBatches);
+    for (var i = 0; i < seqs.length; i++) {
+      var b = sentBatches[seqs[i]];
+      if (b && now - b.at > ackTimeoutMs) return true;
+    }
+    return false;
   }
 
   function stopPresenceHeartbeat() {
@@ -398,15 +462,35 @@
     localClock = 0;
     bumpClockFromDoc();
     knownVersion = version;
+    syncRequestedAt = 0;
     updateMeta(data);
 
     var serverText = doc.materialize();
-    pendingOps = [];
-    // Preserve the user's textarea draft by re-diffing onto the server base.
-    if (hadPending || (localText !== serverText && localText !== "")) {
-      if (localText !== serverText) {
-        applyLocalText(localText);
+    lastSyncedText = serverText;
+    // In-flight batches are superseded by this snapshot; unacked ops are
+    // replayed below and will be flushed again.
+    sentBatches = {};
+
+    // Replay unacked local ops onto the server tree (true CRDT merge).
+    // Re-diffing the textarea instead would resurrect text that other peers
+    // deleted while we were disconnected.
+    var replayed = false;
+    if (pendingOps.length) {
+      var r = doc.applyBatch(pendingOps);
+      if (r.ok) {
+        replayed = true;
+        bumpClockFromDoc();
+      } else {
+        // Ids no longer line up (e.g. doc was rebuilt via REST) — fall back
+        // to preserving the visible draft by re-diffing.
+        pendingOps = [];
       }
+    }
+    // Only re-diff when there really are unsynced local edits (replay failed).
+    // Without pending ops the textarea is just a stale view — re-diffing it
+    // would revert the very change this snapshot delivers.
+    if (!replayed && hadPending && localText !== serverText) {
+      applyLocalText(localText);
     }
     applyingRemote = true;
     setContentValue(doc.materialize(), sel);
@@ -416,19 +500,34 @@
     if (data.ttlSeconds) setTTLControls(data.ttlSeconds);
     renderCursors();
     scheduleCursorSend();
-    setIdleStatus();
+    if (pendingOps.length) {
+      scheduleFlush();
+    } else {
+      setIdleStatus();
+    }
   }
 
   function handleRemoteOps(data) {
     var version = data.version || 0;
     var fromSelf = !!(data.updatedBy && data.updatedBy === CLIENT_ID);
 
-    if (version < knownVersion) return;
+    if (version <= knownVersion) {
+      if (version === knownVersion) updateMeta(data);
+      return;
+    }
+    if (version > knownVersion + 1) {
+      // We missed intermediate updates (dropped/coalesced under bad network).
+      // Applying just this batch would silently diverge — get a snapshot.
+      requestSync();
+      return;
+    }
 
     if (fromSelf) {
+      // Our own batch echoed back: ops are already in the local doc.
       knownVersion = version;
       updateMeta(data);
-      // Drop acked ops; keep anything typed after the flush.
+      if (typeof data.content === "string") lastSyncedText = data.content;
+      // Secondary ack path (covers a dropped direct ack).
       var acked = {};
       (data.ops || []).forEach(function (op) {
         if (op && op.id) acked[op.id] = true;
@@ -437,16 +536,10 @@
         pendingOps = pendingOps.filter(function (op) {
           return !(op && op.id && acked[op.id]);
         });
-      } else {
-        pendingOps = [];
+        forgetSentIds(acked);
       }
       if (!flushTimer && !pendingOps.length) setIdleStatus();
       else if (pendingOps.length) scheduleFlush();
-      return;
-    }
-
-    if (version === knownVersion) {
-      updateMeta(data);
       return;
     }
 
@@ -456,17 +549,19 @@
     if (ops.length) {
       var r = doc.applyBatch(ops);
       if (!r.ok) {
-        // Diverged — force reload
-        load(true);
+        // Diverged — ask the server for an authoritative snapshot.
+        requestSync();
         return;
       }
       bumpClockFromOps(ops);
+      if (typeof data.content === "string") lastSyncedText = data.content;
     } else if (typeof data.content === "string") {
       // Fallback if ops missing but content present
       applyingRemote = true;
       setContentValue(data.content, sel);
       applyingRemote = false;
       knownVersion = version;
+      lastSyncedText = data.content;
       updateMeta(data);
       onLocalTextChanged(oldText, data.content || "");
       renderCursors();
@@ -487,6 +582,61 @@
     renderCursors();
     scheduleCursorSend();
     setIdleStatus();
+  }
+
+  // Direct per-batch ack from the server. Broadcast echoes can be coalesced
+  // into snapshots (or skipped entirely for idempotent re-applies), so this is
+  // the authoritative signal that a sent batch is durable.
+  function handleAck(msg) {
+    var batch = sentBatches[msg.seq || 0];
+    if (batch) {
+      delete sentBatches[msg.seq || 0];
+      pendingOps = pendingOps.filter(function (op) {
+        return !(op && op.id && batch.ids[op.id]);
+      });
+    }
+    if (msg.error) {
+      // Batch rejected (capacity/validation): its ops were dropped above and
+      // the server follows up with a state snapshot to converge on.
+      setStatus("error");
+      return;
+    }
+    var version = msg.version || 0;
+    if (version === knownVersion + 1) {
+      knownVersion = version;
+    }
+    // version > knownVersion + 1: peers' intermediate updates are still in
+    // flight on this socket; let them advance knownVersion in order.
+    if (msg.expiresAt) updateMeta(msg);
+    if (pendingOps.length) scheduleFlush();
+    else if (!flushTimer) setIdleStatus();
+  }
+
+  function forgetSentIds(ackedIds) {
+    Object.keys(sentBatches).forEach(function (seq) {
+      var b = sentBatches[seq];
+      if (!b) return;
+      Object.keys(b.ids).forEach(function (id) {
+        if (ackedIds[id]) delete b.ids[id];
+      });
+      if (!Object.keys(b.ids).length) delete sentBatches[seq];
+    });
+  }
+
+  // Ask the server for a full snapshot (rate-limited; used on version gaps).
+  function requestSync() {
+    var now = Date.now();
+    if (syncRequestedAt && now - syncRequestedAt < 1500) return;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      syncRequestedAt = now;
+      try {
+        socket.send(JSON.stringify({ type: "sync" }));
+      } catch (e) {
+        // Socket broken; reconnect path will resync via initial state.
+      }
+    } else {
+      load(true);
+    }
   }
 
   function applyLocalText(newText) {
@@ -577,39 +727,60 @@
     }
 
     if (connected && socket && socket.readyState === WebSocket.OPEN) {
-      if (pendingOps.length === 0) {
-        // TTL-only touch: full replace of current content to refresh TTL via REST.
-        putReplace(content.value, ttlSeconds);
+      // Only send ops not already awaiting an ack; ops stay in pendingOps
+      // until the server confirms them (WebSocket.send is just a local
+      // buffer write — on a flaky link "sent" is not "delivered").
+      var outstanding = {};
+      Object.keys(sentBatches).forEach(function (seq) {
+        var b = sentBatches[seq];
+        if (!b) return;
+        Object.keys(b.ids).forEach(function (id) {
+          outstanding[id] = true;
+        });
+      });
+      var batch = pendingOps.filter(function (op) {
+        return op && op.id && !outstanding[op.id];
+      });
+      if (!batch.length && pendingOps.length) {
+        // Everything is in flight; ack or the watchdog will move things on.
         return;
       }
-      var batch = pendingOps.slice();
+      // Empty batch = TTL-only update; the server refreshes expiry without a
+      // full-content PUT (which could clobber peers' edits we haven't seen).
+      var seq = nextSeq++;
       try {
         socket.send(JSON.stringify({
           type: "ops",
           ops: batch,
-          ttlSeconds: ttlSeconds
+          ttlSeconds: ttlSeconds,
+          seq: seq
         }));
         pulseTraffic("up");
-        // Optimistic clear: inserts are idempotent; reject path resyncs via state.
-        var sent = {};
-        batch.forEach(function (op) {
-          if (op && op.id) sent[op.id] = true;
-        });
-        pendingOps = pendingOps.filter(function (op) {
-          return !(op && op.id && sent[op.id]);
-        });
+        if (batch.length) {
+          var ids = {};
+          batch.forEach(function (op) {
+            ids[op.id] = true;
+          });
+          sentBatches[seq] = { ids: ids, at: Date.now() };
+        }
       } catch (e) {
-        schedulePutFallback();
+        // Socket died mid-send; ops remain pending and the reconnect's state
+        // snapshot replay will carry them over.
       }
       return;
     }
 
-    // Offline / no WS: fall back to full document PUT (LWW replace).
+    // WS down. While a quick reconnect is still likely, hold the ops — the
+    // post-reconnect snapshot replay merges them without data loss. Only fall
+    // back to REST once WS looks unusable.
+    if (!intentionalClose && reconnectAttempts < 2) return;
     schedulePutFallback();
   }
 
   function schedulePutFallback() {
     window.clearTimeout(putFallbackTimer);
+    // Backoff: 200ms → 3.2s cap, so a dead server isn't hammered.
+    var delay = Math.min(3200, 200 * Math.pow(2, Math.min(putFailures, 4)));
     putFallbackTimer = window.setTimeout(function () {
       putFallbackTimer = 0;
       var ttlSeconds = readTTLSeconds();
@@ -618,22 +789,31 @@
         return;
       }
       putReplace(content.value, ttlSeconds);
-    }, 200);
+    }, delay);
   }
 
   function putReplace(text, ttlSeconds) {
+    if (putInFlight) {
+      schedulePutFallback();
+      return;
+    }
+    putInFlight = true;
     pulseTraffic("up");
+    var body = {
+      content: text,
+      ttlSeconds: ttlSeconds,
+      clientId: CLIENT_ID
+    };
+    // Conditional save: if the server moved past what we saw, we get a 409
+    // with current state and merge instead of overwriting peers' edits.
+    if (knownVersion > 0) body.baseVersion = knownVersion;
     fetch(apiURL, {
       method: "PUT",
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        content: text,
-        ttlSeconds: ttlSeconds,
-        clientId: CLIENT_ID
-      })
+      body: JSON.stringify(body)
     })
       .then(function (response) {
         pulseTraffic("down");
@@ -644,7 +824,14 @@
         });
       })
       .then(function (result) {
+        putInFlight = false;
+        if (result.status === 409) {
+          putFailures = 0;
+          mergeServerState(result.data);
+          return;
+        }
         if (result.status === 429) {
+          putFailures++;
           setStatus("error");
           schedulePutFallback();
           return;
@@ -652,20 +839,115 @@
         if (!result.ok) {
           throw new Error(result.data.error || ("HTTP " + result.status));
         }
+        putFailures = 0;
         knownVersion = result.data.version || 0;
         updateMeta(result.data);
         pendingOps = [];
+        sentBatches = {};
         // After PUT replace, rebuild local doc to match server chain.
         doc = CRDT.buildFromString(CLIENT_ID, text) || new CRDT.Doc();
         localClock = 0;
         bumpClockFromDoc();
+        lastSyncedText = text;
         setTTLControls(result.data.ttlSeconds || ttlSeconds);
-        setIdleStatus();
+        if (content.value !== text) {
+          // User kept typing while the PUT was in flight — push the rest.
+          schedulePutFallback();
+        } else {
+          setIdleStatus();
+        }
       })
       .catch(function () {
+        putInFlight = false;
+        putFailures++;
         setStatus("error");
         schedulePutFallback();
       });
+  }
+
+  // Adopt newer server state seen over REST (409 conflict or offline poll),
+  // merging concurrent edits three-way instead of last-write-wins.
+  function mergeServerState(data) {
+    var theirs = data.content || "";
+    var version = data.version || 0;
+    var base = lastSyncedText;
+    var mine = content.value;
+    var sel = captureSelection();
+    sel.useAnchor = false;
+
+    var merged;
+    if (mine === base || mine === theirs) {
+      merged = theirs;
+    } else if (theirs === base) {
+      merged = mine;
+    } else {
+      merged = merge3(base, mine, theirs);
+    }
+
+    doc = CRDT.buildFromString(CLIENT_ID, merged) || new CRDT.Doc();
+    localClock = 0;
+    bumpClockFromDoc();
+    knownVersion = version;
+    lastSyncedText = theirs;
+    pendingOps = [];
+    sentBatches = {};
+    updateMeta(data);
+    if (data.ttlSeconds) setTTLControls(data.ttlSeconds);
+    var oldText = mine;
+    applyingRemote = true;
+    setContentValue(merged, sel);
+    applyingRemote = false;
+    shiftRemoteCursorsByText(oldText, merged);
+    renderCursors();
+    if (merged !== theirs) {
+      // Our side still has edits the server lacks — push the merged text.
+      schedulePutFallback();
+    } else {
+      setIdleStatus();
+    }
+  }
+
+  // Three-way text merge via the CRDT: apply both sides' diffs against the
+  // common base as concurrent op sets and let RGA ordering resolve them.
+  function merge3(base, mine, theirs) {
+    var d = CRDT.buildFromString("base", base);
+    if (!d) return mine;
+    var baseCps = CRDT.codePoints(base);
+    var ids = d.visibleIds();
+    var clock = d.maxClock();
+    var dTheirs = CRDT.diffToOps(baseCps, ids, CRDT.codePoints(theirs), "their", clock);
+    var dMine = CRDT.diffToOps(baseCps, ids, CRDT.codePoints(mine), "mine", clock);
+    if (dTheirs.ops.length && !d.applyBatch(dTheirs.ops).ok) return mine;
+    if (dMine.ops.length && !d.applyBatch(dMine.ops).ok) return mine;
+    return d.materialize();
+  }
+
+  // REST polling keeps two-way sync alive when WS is unusable (blocked proxy,
+  // long outage); previously offline clients never saw peers' edits at all.
+  function startRestPoll() {
+    if (restPollTimer) return;
+    restPollTimer = window.setInterval(function () {
+      if (connected || putInFlight) return;
+      fetch(apiURL, { headers: { Accept: "application/json" } })
+        .then(function (response) {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        })
+        .then(function (data) {
+          if (connected || putInFlight) return;
+          if ((data.version || 0) !== knownVersion) {
+            mergeServerState(data);
+          }
+        })
+        .catch(function () {
+          // Still offline; keep polling.
+        });
+    }, restPollMs);
+  }
+
+  function stopRestPoll() {
+    window.clearInterval(restPollTimer);
+    restPollTimer = 0;
   }
 
   // Map a caret (code-point gap index) through a text change. Sticky-left at the
@@ -1147,7 +1429,9 @@
         doc = CRDT.buildFromString("server", data.content || "") || new CRDT.Doc();
         localClock = 0;
         knownVersion = data.version || 0;
+        lastSyncedText = data.content || "";
         pendingOps = [];
+        sentBatches = {};
         applyingRemote = true;
         setContentValue(data.content || "", sel);
         applyingRemote = false;

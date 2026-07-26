@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"goclipboard/internal/crdt"
 	"goclipboard/internal/model"
 	"goclipboard/internal/store"
 
@@ -523,4 +524,215 @@ func TestWebSocketOpsMerge(t *testing.T) {
 	}
 	got, _ := h.store.Get("merge")
 	t.Fatalf("timeout waiting for merge, content=%q", got.Content)
+}
+
+func TestWebSocketAckSyncAndTTLOnly(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/ackroom/ws?clientId=aaa"
+	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	readUntil := func(typ string) wsOutbound {
+		t.Helper()
+		for i := 0; i < 20; i++ {
+			var msg wsOutbound
+			if err := conn.ReadJSON(&msg); err != nil {
+				t.Fatalf("read waiting for %q: %v", typ, err)
+			}
+			if msg.Type == typ {
+				return msg
+			}
+		}
+		t.Fatalf("no %q frame", typ)
+		return wsOutbound{}
+	}
+
+	// Op batch with seq → direct ack with same seq and new version.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "ops",
+		"seq":  7,
+		"ops": []map[string]any{
+			{"op": "ins", "id": "aaa:1", "after": "", "ch": "H"},
+		},
+		"ttlSeconds": 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ack := readUntil("ack")
+	if ack.Seq != 7 || ack.Version != 1 || ack.ErrMsg != "" {
+		t.Fatalf("ack = %+v, want seq=7 version=1", ack)
+	}
+
+	// Idempotent resend (ack was "lost"): still acked, version unchanged.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "ops",
+		"seq":  8,
+		"ops": []map[string]any{
+			{"op": "ins", "id": "aaa:1", "after": "", "ch": "H"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ack = readUntil("ack")
+	if ack.Seq != 8 || ack.Version != 1 || ack.ErrMsg != "" {
+		t.Fatalf("resend ack = %+v, want seq=8 version=1", ack)
+	}
+
+	// TTL-only update (empty ops): acked, version bumped, no content PUT.
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "ops",
+		"seq":        9,
+		"ttlSeconds": 7200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ack = readUntil("ack")
+	if ack.Seq != 9 || ack.Version != 2 || ack.TTLSeconds != 7200 {
+		t.Fatalf("ttl ack = %+v, want seq=9 version=2 ttl=7200", ack)
+	}
+	if got, _ := h.store.Get("ackroom"); got.Content != "H" || got.TTL != 2*time.Hour {
+		t.Fatalf("store content=%q ttl=%v", got.Content, got.TTL)
+	}
+
+	// Explicit sync request returns a full state snapshot.
+	if err := conn.WriteJSON(map[string]any{"type": "sync"}); err != nil {
+		t.Fatal(err)
+	}
+	st := readUntil("state")
+	if st.Content != "H" || st.Version != 2 || len(st.Items) == 0 {
+		t.Fatalf("sync state = %+v", st)
+	}
+
+	// Rejected batch (unknown parent) → error ack, then state resync.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "ops",
+		"seq":  10,
+		"ops": []map[string]any{
+			{"op": "ins", "id": "aaa:9", "after": "nope:1", "ch": "X"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ack = readUntil("ack")
+	if ack.Seq != 10 || ack.ErrMsg == "" {
+		t.Fatalf("reject ack = %+v, want seq=10 with error", ack)
+	}
+	st = readUntil("state")
+	if st.Content != "H" {
+		t.Fatalf("resync state content = %q, want H", st.Content)
+	}
+}
+
+func TestSaveBaseVersionConflict(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	put := func(body string) (*http.Response, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/occ", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var data map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&data)
+		return res, data
+	}
+
+	res, _ := put(`{"content":"v1","ttlSeconds":3600,"clientId":"a"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("seed status = %d", res.StatusCode)
+	}
+	res, _ = put(`{"content":"v2","ttlSeconds":3600,"clientId":"b"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d", res.StatusCode)
+	}
+
+	// Stale base → 409 with current state so the client can merge.
+	res, data := put(`{"content":"stomp","ttlSeconds":3600,"clientId":"a","baseVersion":1}`)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("stale base status = %d, want 409", res.StatusCode)
+	}
+	if data["content"] != "v2" || data["version"] != float64(2) || data["error"] == nil {
+		t.Fatalf("conflict body = %v", data)
+	}
+
+	// Matching base → accepted.
+	res, data = put(`{"content":"v3","ttlSeconds":3600,"clientId":"a","baseVersion":2}`)
+	if res.StatusCode != http.StatusOK || data["version"] != float64(3) {
+		t.Fatalf("matching base: status=%d body=%v", res.StatusCode, data)
+	}
+
+	// No baseVersion → legacy LWW still works.
+	res, _ = put(`{"content":"v4","ttlSeconds":3600,"clientId":"c"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("legacy status = %d", res.StatusCode)
+	}
+}
+
+// A subscriber must never receive an ops diff that skips versions: when its
+// last delivered version lags by more than one (coalesced wakeups under load
+// or a slow link), it gets a full snapshot instead.
+func TestWebSocketNoOpsGapAfterCoalescedUpdates(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	// Seed room.
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/gap", bytes.NewBufferString(saveJSON("x", 3600)))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	item, _ := h.store.Get("gap")
+	parent := item.Doc.VisibleIDs()[0]
+
+	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/gap/ws?clientId=reader"
+	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	// Apply two batches back-to-back directly through the store, then ping
+	// once — the reader wakes a single time with lastVersion two behind.
+	if _, _, err := h.store.ApplyOps("gap", []crdt.Op{{Op: crdt.OpInsert, ID: "w:2", After: parent, Ch: "A"}}, 0, "w"); err != nil {
+		t.Fatal(err)
+	}
+	cur, _, err := h.store.ApplyOps("gap", []crdt.Op{{Op: crdt.OpInsert, ID: "w:3", After: "w:2", Ch: "B"}}, 0, "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.noteOps("gap", cur.Version, "w", []crdt.Op{{Op: crdt.OpInsert, ID: "w:3", After: "w:2", Ch: "B"}}, cur.Content)
+	h.broker.ping("gap")
+
+	for {
+		var msg wsOutbound
+		if err := conn.ReadJSON(&msg); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if msg.Type == "ops" && msg.Version == cur.Version {
+			t.Fatalf("got ops diff across a version gap (v%d) — must be a state snapshot", msg.Version)
+		}
+		if (msg.Type == "state" || msg.Type == "update") && msg.Version == cur.Version {
+			if msg.Content != "xAB" {
+				t.Fatalf("snapshot content = %q, want xAB", msg.Content)
+			}
+			return
+		}
+	}
 }

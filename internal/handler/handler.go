@@ -288,8 +288,18 @@ func (h *Handler) handleSaveClipboard(w http.ResponseWriter, r *http.Request, ke
 	}
 
 	// Full document replace (LWW at document level); rebuilds CRDT chain.
+	// baseVersion > 0 makes it conditional so stale offline clients get a
+	// 409 with current state to merge against instead of clobbering peers.
 	clientID := sanitizeClientID(req.ClientID)
-	item, err := h.store.Save(key, req.Content, ttl, clientID)
+	item, err := h.store.SaveWithBase(key, req.Content, ttl, clientID, req.BaseVersion)
+	if errors.Is(err, store.ErrVersionConflict) {
+		cur, exists := h.store.Get(key)
+		writeJSON(w, http.StatusConflict, struct {
+			model.ClipboardResponse
+			Error string `json:"error"`
+		}{model.ResponseFromClipboard(key, cur, exists), "version conflict"})
+		return
+	}
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -314,6 +324,10 @@ func (h *Handler) handleDeleteClipboard(w http.ResponseWriter, key string) {
 
 type wsOutbound struct {
 	Type string `json:"type"`
+	// Ack fields (type=ack): echo of the client's batch seq, plus the
+	// resulting version/expiry, or an error when the batch was rejected.
+	Seq    int64  `json:"seq,omitempty"`
+	ErrMsg string `json:"error,omitempty"`
 	// Content fields (type=state | ops | legacy update)
 	Key        string      `json:"key,omitempty"`
 	Content    string      `json:"content,omitempty"`
@@ -341,6 +355,9 @@ type wsInbound struct {
 	Color            string    `json:"color"`
 	Ops              []crdt.Op `json:"ops,omitempty"`
 	TTLSeconds       int64     `json:"ttlSeconds,omitempty"`
+	// Seq is a client-chosen batch id echoed back in the ack so senders can
+	// track unacked ops across flaky connections.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key string) {
@@ -479,6 +496,14 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 				continue
 			}
 			h.handleWSOps(send, key, clientID, msg)
+		case "sync":
+			// Client detected a version gap (dropped/coalesced updates) and
+			// wants an authoritative snapshot.
+			cur, exists := h.store.Get(key)
+			select {
+			case send <- h.stateMessage(key, cur, exists):
+			default:
+			}
 		case "pong", "ping":
 			// ignore app-level heartbeats; protocol pings handled by gorilla
 		default:
@@ -488,23 +513,27 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 }
 
 func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbound) {
-	if len(msg.Ops) == 0 {
-		return
-	}
 	var ttl time.Duration
 	if msg.TTLSeconds > 0 {
 		d, err := model.TTLFromSeconds(msg.TTLSeconds)
 		if err != nil {
+			h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: err.Error()})
 			return
 		}
 		ttl = d
 	}
-	item, err := h.store.ApplyOps(key, msg.Ops, ttl, clientID)
+	// Empty batch + ttl is a TTL update/refresh (no full-content PUT needed).
+	if len(msg.Ops) == 0 && ttl <= 0 {
+		return
+	}
+	item, changed, err := h.store.ApplyOps(key, msg.Ops, ttl, clientID)
 	if err != nil {
 		if h.logger != nil {
 			h.logger.Debug("ws ops rejected", "key", key, "clientId", clientID, "error", err)
 		}
-		// Capacity / validation failures: resync so the client stays consistent.
+		// Error ack first so the sender drops the bad batch, then a snapshot
+		// so its document converges back to server state.
+		h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: err.Error()})
 		cur, exists := h.store.Get(key)
 		select {
 		case send <- h.stateMessage(key, cur, exists):
@@ -512,8 +541,35 @@ func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbou
 		}
 		return
 	}
-	h.noteOps(key, item.Version, item.UpdatedBy, msg.Ops, item.Content)
+	// Direct ack: the broadcast path can coalesce or skip (idempotent
+	// re-applies do not bump the version), so the sender needs an explicit
+	// confirmation to release its unacked buffer.
+	existsTrue := true
+	h.enqueueAck(send, wsOutbound{
+		Type:       "ack",
+		Seq:        msg.Seq,
+		Version:    item.Version,
+		TTLSeconds: int64(item.TTL.Seconds()),
+		ExpiresAt:  item.ExpiresAt.UTC().Format(time.RFC3339),
+		Exists:     &existsTrue,
+	})
+	if changed {
+		h.noteOps(key, item.Version, item.UpdatedBy, msg.Ops, item.Content)
+	} else {
+		// TTL-only change (version bumped) or idempotent re-apply: subscribers
+		// that need it get a full state snapshot instead of an ops diff.
+		h.noteFullState(key, item.Version, item.UpdatedBy, item.Content)
+	}
 	h.broker.ping(key)
+}
+
+func (h *Handler) enqueueAck(send chan<- any, ack wsOutbound) {
+	select {
+	case send <- ack:
+	default:
+		// Send buffer full: client is stalled; its ack-timeout watchdog will
+		// reconnect and resync via the initial state snapshot.
+	}
 }
 
 func (h *Handler) noteOps(key string, version int64, updatedBy string, ops []crdt.Op, content string) {
@@ -563,7 +619,11 @@ func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVe
 		var msg wsOutbound
 		if forceContent || !exists {
 			msg = h.stateMessage(key, item, exists)
-		} else if ev, ok := h.takeEvent(key, version); ok && !ev.full && len(ev.ops) > 0 {
+		} else if ev, ok := h.takeEvent(key, version); ok && !ev.full && len(ev.ops) > 0 && version == lastVersion+1 && lastExists {
+			// Compact ops diff is only valid when this client saw the
+			// immediately preceding version; any gap (coalesced wakeups,
+			// earlier dropped send) requires a full snapshot, otherwise the
+			// client silently misses the intermediate ops and diverges.
 			msg = wsOutbound{
 				Type:      "ops",
 				Key:       key,
@@ -572,22 +632,21 @@ func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVe
 				Ops:       ev.ops,
 				Content:   ev.content,
 			}
-			if exists {
-				existsTrue := true
-				msg.Exists = &existsTrue
-				msg.TTLSeconds = int64(item.TTL.Seconds())
-				msg.ExpiresAt = item.ExpiresAt.UTC().Format(time.RFC3339)
-			}
+			existsTrue := true
+			msg.Exists = &existsTrue
+			msg.TTLSeconds = int64(item.TTL.Seconds())
+			msg.ExpiresAt = item.ExpiresAt.UTC().Format(time.RFC3339)
 		} else {
 			msg = h.stateMessage(key, item, exists)
 		}
 		select {
 		case send <- msg:
+			lastVersion = version
+			lastExists = exists
 		default:
-			// Drop if client is too slow; next ping will retry.
+			// Client too slow — drop, but keep lastVersion stale so the next
+			// broker ping / presence tick actually retries the update.
 		}
-		lastVersion = version
-		lastExists = exists
 	}
 
 	// File list sync (metadata only). forceContent also pushes initial files snapshot.
