@@ -15,8 +15,12 @@ type Clipboard struct {
 	TTL       time.Duration
 	ExpiresAt time.Time
 	Version   int64
-	UpdatedAt time.Time
-	UpdatedBy string
+	// Generation identifies the room incarnation. It increases when an
+	// expired/deleted room is created again, so version 1 from a new room cannot
+	// be mistaken for version 1 from an older incarnation.
+	Generation int64
+	UpdatedAt  time.Time
+	UpdatedBy  string
 }
 
 type ClipboardResponse struct {
@@ -25,6 +29,7 @@ type ClipboardResponse struct {
 	TTLSeconds int64  `json:"ttlSeconds"`
 	ExpiresAt  string `json:"expiresAt,omitempty"`
 	Version    int64  `json:"version"`
+	Generation int64  `json:"generation,omitempty"`
 	Exists     bool   `json:"exists"`
 	UpdatedBy  string `json:"updatedBy,omitempty"`
 }
@@ -36,7 +41,7 @@ type SaveRequest struct {
 	// with 409 (plus current state) unless the stored version still matches,
 	// so offline/REST clients can merge instead of blindly overwriting.
 	// 0 keeps the legacy unconditional LWW replace.
-	BaseVersion int64 `json:"baseVersion,omitempty"`
+	BaseVersion int64  `json:"baseVersion,omitempty"`
 	ClientID    string `json:"clientId,omitempty"`
 }
 
@@ -79,9 +84,9 @@ type CursorUpdateRequest struct {
 }
 
 type CursorInfo struct {
-	ClientID         string `json:"clientId"`
-	CursorPos        int    `json:"cursorPos"`
-	SelectionEnd     int    `json:"selectionEnd"`
+	ClientID     string `json:"clientId"`
+	CursorPos    int    `json:"cursorPos"`
+	SelectionEnd int    `json:"selectionEnd"`
 	// AfterID is the CRDT id left of the caret. Empty / omitted = document start
 	// or "anchor not provided" (client treats missing field as no wire anchor).
 	AfterID          string `json:"afterId,omitempty"`
@@ -101,6 +106,7 @@ func ResponseFromClipboard(key string, item Clipboard, exists bool) ClipboardRes
 		TTLSeconds: int64(item.TTL.Seconds()),
 		ExpiresAt:  item.ExpiresAt.UTC().Format(time.RFC3339),
 		Version:    item.Version,
+		Generation: item.Generation,
 		Exists:     exists,
 		UpdatedBy:  item.UpdatedBy,
 	}

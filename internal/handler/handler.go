@@ -28,7 +28,8 @@ const (
 	defaultTTL      = time.Hour
 	maxRequestBytes = 1 << 20
 	// Offline if no cursor/heartbeat for this long (client heartbeats ~5s).
-	cursorStaleMs  = 12_000
+	// Must be >= client peerStaleMs (14s) so the client prunes first.
+	cursorStaleMs  = 15_000
 	maxClientIDLen = 64
 	maxColorLen    = 32
 	wsWriteWait    = 10 * time.Second
@@ -72,8 +73,9 @@ type Handler struct {
 }
 
 type contentEvent struct {
-	version   int64
-	updatedBy string
+	version    int64
+	generation int64
+	updatedBy  string
 	// if ops non-nil, prefer broadcasting ops; otherwise full state
 	ops     []crdt.Op
 	content string
@@ -103,6 +105,7 @@ func New(sto *store.Store, static fs.FS, logger *slog.Logger, opts ...Options) *
 }
 
 func (h *Handler) PingExpired(key string) {
+	h.forgetEvent(key)
 	h.broker.ping(key)
 }
 
@@ -253,6 +256,7 @@ func (h *Handler) handleGetClipboard(w http.ResponseWriter, key string) {
 			Content:    "",
 			TTLSeconds: int64(defaultTTL.Seconds()),
 			Version:    model.VersionNotExists,
+			Generation: item.Generation,
 			Exists:     false,
 		})
 		return
@@ -305,7 +309,7 @@ func (h *Handler) handleSaveClipboard(w http.ResponseWriter, r *http.Request, ke
 		return
 	}
 	resp := model.ResponseFromClipboard(key, item, true)
-	h.noteFullState(key, item.Version, item.UpdatedBy, item.Content)
+	h.noteFullState(key, item.Version, item.Generation, item.UpdatedBy, item.Content)
 	h.broker.ping(key)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -315,7 +319,9 @@ func (h *Handler) handleDeleteClipboard(w http.ResponseWriter, key string) {
 	if h.files != nil {
 		h.files.DeleteRoom(key)
 	}
-	h.noteFullState(key, model.VersionNotExists, "", "")
+	// Subscribers will fetch the authoritative empty state after the broker
+	// notification. Do not retain the deleted room's content in lastEvent.
+	h.forgetEvent(key)
 	h.broker.ping(key)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -334,6 +340,7 @@ type wsOutbound struct {
 	TTLSeconds int64       `json:"ttlSeconds,omitempty"`
 	ExpiresAt  string      `json:"expiresAt,omitempty"`
 	Version    int64       `json:"version,omitempty"`
+	Generation int64       `json:"generation,omitempty"`
 	Exists     *bool       `json:"exists,omitempty"`
 	UpdatedBy  string      `json:"updatedBy,omitempty"`
 	Items      []crdt.Item `json:"items,omitempty"`
@@ -396,23 +403,28 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 		// Force read loop to exit if writes fail (half-open socket).
 		_ = conn.Close()
 	}()
-	defer func() {
-		close(send)
-		<-writeDone
-	}()
 
 	// Initial snapshot.
 	var (
-		lastVersion  int64 = -1
-		lastExists   bool
-		lastFilesRev int64 = -1
+		lastVersion    int64 = -1
+		lastGeneration int64 = -1
+		lastExists     bool
+		lastFilesRev   int64 = -1
 	)
-	lastVersion, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastExists, lastFilesRev, true)
+	lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true)
 
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
 		h.wsReadLoop(conn, send, key, clientID)
+	}()
+	defer func() {
+		// Stop both producers before closing send. The read loop may still be
+		// finishing an op batch when the writer or request context exits.
+		_ = conn.Close()
+		<-readDone
+		close(send)
+		<-writeDone
 	}()
 
 	pingTicker := time.NewTicker(wsPingPeriod)
@@ -429,7 +441,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 		case <-r.Context().Done():
 			return
 		case <-ch:
-			lastVersion, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastExists, lastFilesRev, false)
+			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false)
 		case <-pingTicker.C:
 			select {
 			case send <- wsControl{ping: true}:
@@ -438,7 +450,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 		case <-presenceTicker.C:
 			// Push pruned presence so idle/left peers drop without waiting for edits.
 			// Also re-check file list in case TTL expiry dropped files without a write path.
-			lastVersion, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastExists, lastFilesRev, false)
+			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false)
 		}
 	}
 }
@@ -549,16 +561,17 @@ func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbou
 		Type:       "ack",
 		Seq:        msg.Seq,
 		Version:    item.Version,
+		Generation: item.Generation,
 		TTLSeconds: int64(item.TTL.Seconds()),
 		ExpiresAt:  item.ExpiresAt.UTC().Format(time.RFC3339),
 		Exists:     &existsTrue,
 	})
 	if changed {
-		h.noteOps(key, item.Version, item.UpdatedBy, msg.Ops, item.Content)
+		h.noteOps(key, item.Version, item.Generation, item.UpdatedBy, msg.Ops, item.Content)
 	} else {
 		// TTL-only change (version bumped) or idempotent re-apply: subscribers
 		// that need it get a full state snapshot instead of an ops diff.
-		h.noteFullState(key, item.Version, item.UpdatedBy, item.Content)
+		h.noteFullState(key, item.Version, item.Generation, item.UpdatedBy, item.Content)
 	}
 	h.broker.ping(key)
 }
@@ -572,65 +585,80 @@ func (h *Handler) enqueueAck(send chan<- any, ack wsOutbound) {
 	}
 }
 
-func (h *Handler) noteOps(key string, version int64, updatedBy string, ops []crdt.Op, content string) {
+func (h *Handler) noteOps(key string, version, generation int64, updatedBy string, ops []crdt.Op, content string) {
 	h.eventMu.Lock()
 	defer h.eventMu.Unlock()
 	cp := make([]crdt.Op, len(ops))
 	copy(cp, ops)
 	h.lastEvent[key] = contentEvent{
-		version:   version,
-		updatedBy: updatedBy,
-		ops:       cp,
-		content:   content,
-		full:      false,
+		version:    version,
+		generation: generation,
+		updatedBy:  updatedBy,
+		ops:        cp,
+		content:    content,
+		full:       false,
 	}
 }
 
-func (h *Handler) noteFullState(key string, version int64, updatedBy, content string) {
+func (h *Handler) noteFullState(key string, version, generation int64, updatedBy, content string) {
 	h.eventMu.Lock()
 	defer h.eventMu.Unlock()
 	h.lastEvent[key] = contentEvent{
-		version:   version,
-		updatedBy: updatedBy,
-		content:   content,
-		full:      true,
+		version:    version,
+		generation: generation,
+		updatedBy:  updatedBy,
+		content:    content,
+		full:       true,
 	}
 }
 
-func (h *Handler) takeEvent(key string, version int64) (contentEvent, bool) {
+func (h *Handler) forgetEvent(key string) {
+	h.eventMu.Lock()
+	defer h.eventMu.Unlock()
+	delete(h.lastEvent, key)
+}
+
+func (h *Handler) takeEvent(key string, version, generation int64) (contentEvent, bool) {
 	h.eventMu.Lock()
 	defer h.eventMu.Unlock()
 	ev, ok := h.lastEvent[key]
-	if !ok || ev.version != version {
+	if !ok || ev.version != version || ev.generation != generation {
 		return contentEvent{}, false
 	}
 	return ev, true
 }
 
-func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVersion int64, lastExists bool, lastFilesRev int64, forceContent bool) (int64, bool, int64) {
+func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVersion, lastGeneration int64, lastExists bool, lastFilesRev int64, forceContent bool) (int64, int64, bool, int64) {
 	item, exists := h.store.Get(key)
 	version := model.VersionNotExists
+	generation := item.Generation
 	if exists {
 		version = item.Version
+	} else {
+		// Lazy expiry can remove a room without invoking the cleanup callback.
+		// Once the authoritative state is gone, retaining its content event is
+		// both unnecessary and an avoidable memory leak.
+		h.forgetEvent(key)
 	}
 
-	contentChanged := forceContent || exists != lastExists || version != lastVersion
+	contentChanged := forceContent || exists != lastExists || version != lastVersion || generation != lastGeneration
 	if contentChanged {
 		var msg wsOutbound
 		if forceContent || !exists {
 			msg = h.stateMessage(key, item, exists)
-		} else if ev, ok := h.takeEvent(key, version); ok && !ev.full && len(ev.ops) > 0 && version == lastVersion+1 && lastExists {
+		} else if ev, ok := h.takeEvent(key, version, generation); ok && !ev.full && len(ev.ops) > 0 && generation == lastGeneration && version == lastVersion+1 && lastExists {
 			// Compact ops diff is only valid when this client saw the
 			// immediately preceding version; any gap (coalesced wakeups,
 			// earlier dropped send) requires a full snapshot, otherwise the
 			// client silently misses the intermediate ops and diverges.
 			msg = wsOutbound{
-				Type:      "ops",
-				Key:       key,
-				Version:   version,
-				UpdatedBy: ev.updatedBy,
-				Ops:       ev.ops,
-				Content:   ev.content,
+				Type:       "ops",
+				Key:        key,
+				Version:    version,
+				Generation: generation,
+				UpdatedBy:  ev.updatedBy,
+				Ops:        ev.ops,
+				Content:    ev.content,
 			}
 			existsTrue := true
 			msg.Exists = &existsTrue
@@ -642,6 +670,7 @@ func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVe
 		select {
 		case send <- msg:
 			lastVersion = version
+			lastGeneration = generation
 			lastExists = exists
 		default:
 			// Client too slow — drop, but keep lastVersion stale so the next
@@ -666,7 +695,7 @@ func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVe
 	case send <- h.cursorMessage(key, clientID):
 	default:
 	}
-	return lastVersion, lastExists, lastFilesRev
+	return lastVersion, lastGeneration, lastExists, lastFilesRev
 }
 
 func (h *Handler) filesMessage(key string, files []model.FileInfo, rev int64, uploadEnabled bool) wsOutbound {
@@ -684,13 +713,14 @@ func (h *Handler) filesMessage(key string, files []model.FileInfo, rev int64, up
 }
 
 func (h *Handler) stateMessage(key string, item model.Clipboard, exists bool) wsOutbound {
-	msg := wsOutbound{Type: "state", Key: key}
+	msg := wsOutbound{Type: "state", Key: key, Generation: item.Generation}
 	if exists {
 		resp := model.ResponseFromClipboard(key, item, true)
 		msg.Content = resp.Content
 		msg.TTLSeconds = resp.TTLSeconds
 		msg.ExpiresAt = resp.ExpiresAt
 		msg.Version = resp.Version
+		msg.Generation = resp.Generation
 		existsTrue := true
 		msg.Exists = &existsTrue
 		msg.UpdatedBy = resp.UpdatedBy

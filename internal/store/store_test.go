@@ -55,6 +55,67 @@ func TestGetExpired(t *testing.T) {
 	}
 }
 
+func TestGenerationIncreasesAcrossExpiryAndRecreation(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	st := New(WithClock(func() time.Time { return now }))
+
+	first, err := st.Save("room", "old", time.Second, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Generation <= 0 || first.Version != 1 {
+		t.Fatalf("first identity = generation %d version %d, want positive/1", first.Generation, first.Version)
+	}
+
+	now = now.Add(2 * time.Second)
+	if _, ok := st.Get("room"); ok {
+		t.Fatal("expired room should not exist")
+	}
+
+	second, err := st.Save("room", "new", time.Hour, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Generation <= first.Generation || second.Version != 1 {
+		t.Fatalf("recreated identity = generation %d version %d, want >%d/1", second.Generation, second.Version, first.Generation)
+	}
+}
+
+func TestGenerationIncreasesAcrossDeleteAndRecreation(t *testing.T) {
+	st := New()
+	first, err := st.Save("room", "old", time.Hour, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Delete("room")
+
+	second, err := st.Save("room", "new", time.Hour, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Generation != first.Generation+1 || second.Version != 1 {
+		t.Fatalf("recreated identity = generation %d version %d, want %d/1", second.Generation, second.Version, first.Generation+1)
+	}
+}
+
+func TestApplyOpsRecreatesExpiredRoomWithNewGeneration(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	st := New(WithClock(func() time.Time { return now }))
+	first, err := st.Save("room", "old", time.Second, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Second)
+
+	second, changed, err := st.ApplyOps("room", []crdt.Op{{Op: crdt.OpInsert, ID: "b:1", Ch: "N"}}, time.Hour, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || second.Content != "N" || second.Version != 1 || second.Generation != first.Generation+1 {
+		t.Fatalf("recreated ApplyOps result = content %q version %d generation %d changed %v, want N/1/%d/true", second.Content, second.Version, second.Generation, changed, first.Generation+1)
+	}
+}
+
 func TestSaveNew(t *testing.T) {
 	st := New()
 	item, err := st.Save("key1", "content", time.Minute, "c1")
@@ -200,7 +261,11 @@ func TestStartCleanup(t *testing.T) {
 	var expired []string
 	var mu sync.Mutex
 	st := New(
-		WithClock(func() time.Time { return now }),
+		WithClock(func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			return now
+		}),
 		WithOnExpire(func(key string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -211,12 +276,19 @@ func TestStartCleanup(t *testing.T) {
 	mustSave(t, st, "short", "x", 50*time.Millisecond, "")
 
 	stop := make(chan struct{})
-	go st.StartCleanup(stop, 20*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st.StartCleanup(stop, 20*time.Millisecond)
+	}()
 
+	mu.Lock()
 	now = now.Add(100 * time.Millisecond)
+	mu.Unlock()
 	time.Sleep(50 * time.Millisecond)
 
 	close(stop)
+	<-done
 
 	mu.Lock()
 	defer mu.Unlock()

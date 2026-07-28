@@ -140,14 +140,22 @@
     return { ok: true, changed: changed };
   };
 
+  // Iterative pre-order DFS: sequentially typed text forms a chain whose depth
+  // equals the document length, which overflows the call stack if recursed.
   Doc.prototype.walk = function (parent, fn) {
+    var stack = [];
     var kids = this.children[parent] || [];
-    for (var i = 0; i < kids.length; i++) {
-      var id = kids[i];
+    var i;
+    for (i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    while (stack.length) {
+      var id = stack.pop();
       var item = this.items[id];
       if (!item) continue;
       fn(item);
-      this.walk(id, fn);
+      var ck = this.children[id];
+      if (ck) {
+        for (i = ck.length - 1; i >= 0; i--) stack.push(ck[i]);
+      }
     }
   };
 

@@ -153,6 +153,8 @@
   var doc = new CRDT.Doc();
   var localClock = 0;
   var knownVersion = 0;
+  var knownGeneration = 0;
+  var knownExists = false;
   var pendingOps = []; // local ops not yet acked by the server
   var sentBatches = {}; // seq -> { ids: {opId:true}, at: ms } awaiting ack
   var nextSeq = 1;
@@ -160,10 +162,21 @@
   var lastSyncedText = ""; // server text at knownVersion (3-way merge base)
   var flushTimer = 0;
   var flushDelayMs = 60;
+  var maxOpsPerSend = 1000; // server caps 4096 ops / 256KiB per WS message
   var putFallbackTimer = 0;
   var putFailures = 0;
   var putInFlight = false;
   var applyingRemote = false;
+  // IME composition is a provisional textarea value, not a sequence of
+  // committed CRDT edits.  Remote .value assignments during composition can
+  // make the browser submit the composition twice (most visible with Chinese
+  // input), so hold content messages until compositionend.
+  var compositionActive = false;
+  var compositionCommitPending = false;
+  var compositionInputPending = false;
+  var compositionBaseText = "";
+  var compositionBaseDoc = null;
+  var deferredContentMessages = [];
   var lastExpiresAt = null;
   var syncRequestedAt = 0;
 
@@ -171,7 +184,7 @@
   var cursorDelayMs = 80;
   var presenceHeartbeatMs = 5000;
   var presenceHeartbeatTimer = 0;
-  var presencePruneMs = 2000;
+  var presencePruneMs = 5000;
   var presencePruneTimer = 0;
   var peerStaleMs = 14000;
   var remoteCursors = {};
@@ -193,6 +206,8 @@
   roomTitle.textContent = "/" + key;
   updateRoomTitleChrome();
   content.addEventListener("input", onInput);
+  content.addEventListener("compositionstart", onCompositionStart);
+  content.addEventListener("compositionend", onCompositionEnd);
   ttlValue.addEventListener("input", onSettingsChange);
   ttlUnit.addEventListener("change", onSettingsChange);
   content.addEventListener("mouseup", scheduleCursorSend);
@@ -235,9 +250,13 @@
   }, 15000);
 
   updatePeers();
-  load(false);
   loadFiles();
   connectWS();
+  // Let the WS state establish the authoritative CRDT ids first.  A REST
+  // response rebuilds a text-only document with fresh "server:*" ids; if it
+  // wins a race with the initial WS snapshot, local ops can no longer be
+  // replayed by anchor and the draft may be re-diffed as a duplicate tail.
+  load(false);
   scheduleCursorSend();
 
   function connectWS() {
@@ -291,6 +310,16 @@
         return;
       }
       if (!msg || !msg.type) return;
+
+      if (
+        (msg.type === "state" || msg.type === "update" || msg.type === "ops") &&
+        (compositionActive || compositionCommitPending)
+      ) {
+        // Keep the native IME buffer untouched.  The queued messages are
+        // applied after the committed local composition has become CRDT ops.
+        deferredContentMessages.push(msg);
+        return;
+      }
 
       if (msg.type === "state" || msg.type === "update") {
         handleState(msg);
@@ -428,6 +457,13 @@
 
   // --- CRDT collaboration ----------------------------------------------------
 
+  // Sent/acked bookkeeping key. An "ins" and a later "del" target the same
+  // item id, so tracking bare ids would let an ack for the insert batch drop a
+  // still-unsent delete of the same character (lost op → divergence).
+  function opKey(op) {
+    return op.op + "|" + op.id;
+  }
+
   // Lamport: any observed clock in the doc (all sites), not only ours.
   function bumpClockFromDoc() {
     var m = doc.maxClock ? doc.maxClock() : 0;
@@ -442,9 +478,61 @@
     });
   }
 
+  function messageGeneration(data) {
+    var n = Number(data && data.generation);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.floor(n);
+  }
+
+  function messageExists(data) {
+    return !(data && data.exists === false);
+  }
+
+  // A state snapshot can be delayed behind an ops broadcast on the same
+  // connection because sync and broker notifications have separate producers.
+  // Room generation distinguishes a recreated key from the old incarnation;
+  // version then orders snapshots within one incarnation.
+  function snapshotIsStale(data) {
+    var generation = messageGeneration(data);
+    var exists = messageExists(data);
+    var version = Number(data && data.version) || 0;
+    var hasGeneration = data && data.generation !== undefined && data.generation !== null;
+
+    if (!hasGeneration) {
+      return knownExists && exists && version < knownVersion;
+    }
+    if (generation < knownGeneration) return true;
+    if (generation > knownGeneration) return false;
+    if (!exists && knownExists) return false;
+    if (exists && !knownExists) return true;
+    return exists && knownExists && version < knownVersion;
+  }
+
+  function restSnapshotIsStale(data) {
+    if (snapshotIsStale(data)) return true;
+    var generation = messageGeneration(data);
+    var exists = messageExists(data);
+    var version = Number(data && data.version) || 0;
+    var hasGeneration = data && data.generation !== undefined && data.generation !== null;
+    if (hasGeneration) {
+      if (generation !== knownGeneration) return false;
+      if (exists && (knownExists ? version <= knownVersion : true)) return true;
+      return false;
+    }
+    return knownExists && exists && version <= knownVersion;
+  }
+
   function handleState(data) {
+    if (compositionIsActive()) {
+      deferredContentMessages.push(data);
+      return;
+    }
     var version = data.version || 0;
+    var generation = messageGeneration(data);
+    var exists = messageExists(data);
+    if (snapshotIsStale(data)) return;
     var localText = content.value;
+    var previousSyncedText = lastSyncedText;
     var hadPending = pendingOps.length > 0;
     // Capture before replacing the doc so caret can stick to the same characters.
     var sel = captureSelection();
@@ -462,6 +550,12 @@
     localClock = 0;
     bumpClockFromDoc();
     knownVersion = version;
+    // Empty-room responses intentionally omit generation; retain the last
+    // incarnation so a delayed old snapshot cannot look newer than tombstone 0.
+    if (data.generation !== undefined && data.generation !== null) {
+      knownGeneration = generation;
+    }
+    knownExists = exists;
     syncRequestedAt = 0;
     updateMeta(data);
 
@@ -482,7 +576,9 @@
         bumpClockFromDoc();
       } else {
         // Ids no longer line up (e.g. doc was rebuilt via REST) — fall back
-        // to preserving the visible draft by re-diffing.
+        // to a text three-way rebase.  Re-diffing the entire textarea directly
+        // can turn a peer's already-visible tail into local inserts, and then
+        // the peer ops append that tail a second time.
         pendingOps = [];
       }
     }
@@ -490,7 +586,11 @@
     // Without pending ops the textarea is just a stale view — re-diffing it
     // would revert the very change this snapshot delivers.
     if (!replayed && hadPending && localText !== serverText) {
-      applyLocalText(localText);
+      var rebasedText = localText;
+      if (previousSyncedText && previousSyncedText !== localText) {
+        rebasedText = merge3(previousSyncedText, localText, serverText);
+      }
+      if (rebasedText !== serverText) applyLocalText(rebasedText);
     }
     applyingRemote = true;
     setContentValue(doc.materialize(), sel);
@@ -508,9 +608,24 @@
   }
 
   function handleRemoteOps(data) {
+    if (compositionIsActive()) {
+      deferredContentMessages.push(data);
+      return;
+    }
     var version = data.version || 0;
+    var generation = messageGeneration(data);
+    var hasGeneration = data && data.generation !== undefined && data.generation !== null;
     var fromSelf = !!(data.updatedBy && data.updatedBy === CLIENT_ID);
 
+    if (hasGeneration && generation < knownGeneration) return;
+    if (hasGeneration && generation > knownGeneration) {
+      requestSync();
+      return;
+    }
+    if (hasGeneration && !knownExists && data.exists !== false) {
+      requestSync();
+      return;
+    }
     if (version <= knownVersion) {
       if (version === knownVersion) updateMeta(data);
       return;
@@ -525,16 +640,18 @@
     if (fromSelf) {
       // Our own batch echoed back: ops are already in the local doc.
       knownVersion = version;
+      if (hasGeneration) knownGeneration = generation;
+      knownExists = true;
       updateMeta(data);
       if (typeof data.content === "string") lastSyncedText = data.content;
       // Secondary ack path (covers a dropped direct ack).
       var acked = {};
       (data.ops || []).forEach(function (op) {
-        if (op && op.id) acked[op.id] = true;
+        if (op && op.id) acked[opKey(op)] = true;
       });
       if (Object.keys(acked).length) {
         pendingOps = pendingOps.filter(function (op) {
-          return !(op && op.id && acked[op.id]);
+          return !(op && op.id && acked[opKey(op)]);
         });
         forgetSentIds(acked);
       }
@@ -561,6 +678,8 @@
       setContentValue(data.content, sel);
       applyingRemote = false;
       knownVersion = version;
+      if (hasGeneration) knownGeneration = generation;
+      knownExists = true;
       lastSyncedText = data.content;
       updateMeta(data);
       onLocalTextChanged(oldText, data.content || "");
@@ -571,6 +690,8 @@
     }
 
     knownVersion = version;
+    if (hasGeneration) knownGeneration = generation;
+    knownExists = true;
     updateMeta(data);
 
     var next = doc.materialize();
@@ -592,7 +713,7 @@
     if (batch) {
       delete sentBatches[msg.seq || 0];
       pendingOps = pendingOps.filter(function (op) {
-        return !(op && op.id && batch.ids[op.id]);
+        return !(op && op.id && batch.ids[opKey(op)]);
       });
     }
     if (msg.error) {
@@ -602,6 +723,12 @@
       return;
     }
     var version = msg.version || 0;
+    var generation = messageGeneration(msg);
+    var hasGeneration = msg.generation !== undefined && msg.generation !== null;
+    if (hasGeneration && generation >= knownGeneration) {
+      knownGeneration = generation;
+      knownExists = msg.exists !== false;
+    }
     if (version === knownVersion + 1) {
       knownVersion = version;
     }
@@ -661,8 +788,121 @@
     scheduleFlush();
   }
 
+  function onCompositionStart() {
+    if (applyingRemote || compositionActive) return;
+    compositionActive = true;
+    compositionCommitPending = false;
+    compositionInputPending = false;
+    compositionBaseText = content.value;
+    compositionBaseDoc = doc.clone();
+  }
+
+  function onCompositionEnd() {
+    if (!compositionActive) return;
+    compositionActive = false;
+    compositionCommitPending = true;
+    // Some browsers dispatch the final input event immediately after
+    // compositionend.  Let that event update textarea.value before reading it.
+    window.setTimeout(commitComposition, 0);
+  }
+
+  function compositionIsActive() {
+    return compositionActive || compositionCommitPending;
+  }
+
+  function captureTextSelection(text) {
+    var value = String(text || "");
+    return {
+      startCp: CRDT.utf16ToCodePointOffset(value, content.selectionStart || 0),
+      endCp: CRDT.utf16ToCodePointOffset(value, content.selectionEnd || 0),
+      dir: content.selectionDirection || "none",
+      useAnchor: false,
+      hadFocus: document.activeElement === content
+    };
+  }
+
+  function commitComposition() {
+    if (!compositionCommitPending) return;
+
+    var baseText = compositionBaseText;
+    var baseDoc = compositionBaseDoc;
+    var finalText = content.value;
+    var sel = captureTextSelection(finalText);
+    var oldText = doc.materialize();
+    var applied = true;
+
+    if (!baseDoc) {
+      baseDoc = doc.clone();
+      baseText = oldText;
+    }
+
+    // Build the composition diff against the document that was visible when
+    // the IME started, then apply those anchored ops to the live document.
+    // Remote content messages were held meanwhile, so the anchors remain
+    // valid and the composition cannot be mistaken for a whole-tail insert.
+    bumpClockFromDoc();
+    var diff = CRDT.diffToOps(
+      CRDT.codePoints(baseText),
+      baseDoc.visibleIds(),
+      CRDT.codePoints(finalText),
+      CLIENT_ID,
+      localClock
+    );
+    if (diff.ops.length) {
+      localClock = diff.clock;
+      var result = doc.applyBatch(diff.ops);
+      if (!result.ok) {
+        applied = false;
+        setStatus("error");
+        requestSync();
+      } else {
+        pendingOps = pendingOps.concat(diff.ops);
+      }
+    }
+
+    compositionBaseText = "";
+    compositionBaseDoc = null;
+    compositionInputPending = false;
+    compositionCommitPending = false;
+
+    if (applied) {
+      var next = doc.materialize();
+      applyingRemote = true;
+      setContentValue(next, sel);
+      applyingRemote = false;
+      onLocalTextChanged(oldText, next);
+      renderCursors();
+      scheduleCursorSend();
+      if (pendingOps.length) scheduleFlush();
+    }
+
+    flushDeferredContentMessages();
+  }
+
+  function flushDeferredContentMessages() {
+    if (compositionIsActive() || !deferredContentMessages.length) return;
+    var queued = deferredContentMessages;
+    deferredContentMessages = [];
+    queued.forEach(function (msg) {
+      if (!msg || !msg.type) return;
+      if (msg.type === "state" || msg.type === "update") {
+        handleState(msg);
+      } else if (msg.type === "ops") {
+        handleRemoteOps(msg);
+      } else if (msg.type === "rest") {
+        mergeServerState(msg.data);
+      } else if (msg.type === "rest-load") {
+        applyLoadedSnapshot(msg.data, msg.force);
+      }
+    });
+  }
+
   function onInput() {
     if (applyingRemote) return;
+    if (compositionActive || compositionCommitPending) {
+      compositionInputPending = true;
+      return;
+    }
     var oldText = doc.materialize();
     applyLocalText(content.value);
     // Prefer CRDT materialize so caret math matches visibleIds / afterId anchors.
@@ -734,17 +974,23 @@
       Object.keys(sentBatches).forEach(function (seq) {
         var b = sentBatches[seq];
         if (!b) return;
-        Object.keys(b.ids).forEach(function (id) {
-          outstanding[id] = true;
+        Object.keys(b.ids).forEach(function (k) {
+          outstanding[k] = true;
         });
       });
       var batch = pendingOps.filter(function (op) {
-        return op && op.id && !outstanding[op.id];
+        return op && op.id && !outstanding[opKey(op)];
       });
       if (!batch.length && pendingOps.length) {
         // Everything is in flight; ack or the watchdog will move things on.
         return;
       }
+      // Cap each message: the server rejects >4096 ops per batch and closes
+      // the socket past its 256KiB read limit — one huge paste must not turn
+      // into an endless reconnect/resend loop. Ops are causally ordered, so a
+      // prefix is always safe to send; the remainder follows on the next flush.
+      var overflow = batch.length > maxOpsPerSend;
+      if (overflow) batch = batch.slice(0, maxOpsPerSend);
       // Empty batch = TTL-only update; the server refreshes expiry without a
       // full-content PUT (which could clobber peers' edits we haven't seen).
       var seq = nextSeq++;
@@ -759,10 +1005,11 @@
         if (batch.length) {
           var ids = {};
           batch.forEach(function (op) {
-            ids[op.id] = true;
+            ids[opKey(op)] = true;
           });
           sentBatches[seq] = { ids: ids, at: Date.now() };
         }
+        if (overflow) scheduleFlush();
       } catch (e) {
         // Socket died mid-send; ops remain pending and the reconnect's state
         // snapshot replay will carry them over.
@@ -841,6 +1088,8 @@
         }
         putFailures = 0;
         knownVersion = result.data.version || 0;
+        knownGeneration = messageGeneration(result.data);
+        knownExists = true;
         updateMeta(result.data);
         pendingOps = [];
         sentBatches = {};
@@ -868,6 +1117,13 @@
   // Adopt newer server state seen over REST (409 conflict or offline poll),
   // merging concurrent edits three-way instead of last-write-wins.
   function mergeServerState(data) {
+    if (compositionIsActive()) {
+      deferredContentMessages.push({
+        type: "rest",
+        data: data
+      });
+      return;
+    }
     var theirs = data.content || "";
     var version = data.version || 0;
     var base = lastSyncedText;
@@ -888,6 +1144,10 @@
     localClock = 0;
     bumpClockFromDoc();
     knownVersion = version;
+    if (data.generation !== undefined && data.generation !== null) {
+      knownGeneration = messageGeneration(data);
+    }
+    knownExists = messageExists(data);
     lastSyncedText = theirs;
     pendingOps = [];
     sentBatches = {};
@@ -935,7 +1195,11 @@
         })
         .then(function (data) {
           if (connected || putInFlight) return;
-          if ((data.version || 0) !== knownVersion) {
+          if (
+            messageGeneration(data) !== knownGeneration ||
+            messageExists(data) !== knownExists ||
+            (messageExists(data) && (data.version || 0) !== knownVersion)
+          ) {
             mergeServerState(data);
           }
         })
@@ -1180,7 +1444,7 @@
     var next = pickColor(CLIENT_ID, peerUsedColors());
     if (normalizeColor(next) === selfColor) return;
     CLIENT_COLOR = next;
-    scheduleCursorSend();
+    showSelfLabel();
   }
 
   function renderCursors() {
@@ -1419,30 +1683,58 @@
         return response.json();
       })
       .then(function (data) {
-        // REST has no CRDT items — rebuild from content; WS state will refine.
-        if (!force && pendingOps.length) {
+        if (compositionIsActive()) {
+          deferredContentMessages.push({
+            type: "rest-load",
+            data: data,
+            force: force
+          });
           return;
         }
-        // REST rebuilds CRDT ids from scratch — keep caret by code-point index only.
-        var sel = captureSelection();
-        sel.useAnchor = false;
-        doc = CRDT.buildFromString("server", data.content || "") || new CRDT.Doc();
-        localClock = 0;
-        knownVersion = data.version || 0;
-        lastSyncedText = data.content || "";
-        pendingOps = [];
-        sentBatches = {};
-        applyingRemote = true;
-        setContentValue(data.content || "", sel);
-        applyingRemote = false;
-        setTTLControls(data.ttlSeconds || 3600);
-        updateMeta(data);
-        renderCursors();
-        setIdleStatus();
+        applyLoadedSnapshot(data, force);
       })
       .catch(function () {
         setStatus("error");
       });
+  }
+
+  function applyLoadedSnapshot(data, force) {
+    // REST has no CRDT items — rebuild from content; WS state will refine.
+    if (
+      !force &&
+      socket &&
+      (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
+    if (!force && pendingOps.length) {
+      return;
+    }
+    // A WS snapshot at the same or newer version already landed; a slower
+    // REST response must not clobber the live CRDT tree with fresh ids.
+    if (!force && connected && restSnapshotIsStale(data)) {
+      return;
+    }
+    // REST rebuilds CRDT ids from scratch — keep caret by code-point index only.
+    var sel = captureSelection();
+    sel.useAnchor = false;
+    doc = CRDT.buildFromString("server", data.content || "") || new CRDT.Doc();
+    localClock = 0;
+    knownVersion = data.version || 0;
+    if (data.generation !== undefined && data.generation !== null) {
+      knownGeneration = messageGeneration(data);
+    }
+    knownExists = messageExists(data);
+    lastSyncedText = data.content || "";
+    pendingOps = [];
+    sentBatches = {};
+    applyingRemote = true;
+    setContentValue(data.content || "", sel);
+    applyingRemote = false;
+    setTTLControls(data.ttlSeconds || 3600);
+    updateMeta(data);
+    renderCursors();
+    setIdleStatus();
   }
 
   // Snapshot local selection against the current CRDT sequence so remote merges

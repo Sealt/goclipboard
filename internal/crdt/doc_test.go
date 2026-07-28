@@ -276,3 +276,24 @@ func TestValidateBatch(t *testing.T) {
 		t.Fatal("multi-codepoint ch should fail")
 	}
 }
+
+func TestDeepChainWalkDoesNotOverflow(t *testing.T) {
+	// Sequentially typed text is a parent chain as deep as the document;
+	// walk must be iterative or this depth overflows the stack.
+	const n = 200_000
+	d := NewDoc()
+	prev := ""
+	for i := 1; i <= n; i++ {
+		id := FormatID("a", int64(i))
+		if _, err := d.Insert(id, prev, "x"); err != nil {
+			t.Fatal(err)
+		}
+		prev = id
+	}
+	if got := len(d.Materialize()); got != n {
+		t.Fatalf("materialize len = %d, want %d", got, n)
+	}
+	if got := len(d.Items()); got != n {
+		t.Fatalf("items len = %d, want %d", got, n)
+	}
+}

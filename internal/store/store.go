@@ -32,14 +32,15 @@ var (
 )
 
 type Store struct {
-	mu       sync.Mutex
-	items    map[string]model.Clipboard
-	sizeBy   map[string]int64
-	total    int64
-	maxRooms int
-	maxTotal int64
-	now      func() time.Time
-	onExpire func(key string)
+	mu             sync.Mutex
+	items          map[string]model.Clipboard
+	sizeBy         map[string]int64
+	nextGeneration int64
+	total          int64
+	maxRooms       int
+	maxTotal       int64
+	now            func() time.Time
+	onExpire       func(key string)
 }
 
 type Option func(*Store)
@@ -67,11 +68,12 @@ func WithLimits(maxRooms int, maxTotalBytes int64) Option {
 
 func New(opts ...Option) *Store {
 	s := &Store{
-		items:    make(map[string]model.Clipboard),
-		sizeBy:   make(map[string]int64),
-		maxRooms: DefaultMaxRooms,
-		maxTotal: DefaultMaxTotalBytes,
-		now:      time.Now,
+		items:          make(map[string]model.Clipboard),
+		sizeBy:         make(map[string]int64),
+		nextGeneration: time.Now().UnixMicro(),
+		maxRooms:       DefaultMaxRooms,
+		maxTotal:       DefaultMaxTotalBytes,
+		now:            time.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -96,7 +98,8 @@ func (s *Store) Get(key string) (model.Clipboard, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	item, ok := s.getLiveLocked(key, s.now())
+	now := s.now()
+	item, ok := s.getLiveLocked(key, now)
 	if !ok {
 		return model.Clipboard{}, false
 	}
@@ -132,6 +135,11 @@ func (s *Store) SaveWithBase(key, content string, ttl time.Duration, updatedBy s
 	}
 
 	if exists && current.Content == content && current.TTL == ttl {
+		if current.Generation <= 0 {
+			current.Generation = s.newGenerationLocked()
+		} else if current.Generation > s.nextGeneration {
+			s.nextGeneration = current.Generation
+		}
 		current.ExpiresAt = now.Add(ttl)
 		current.UpdatedAt = now
 		if updatedBy != "" {
@@ -159,19 +167,27 @@ func (s *Store) SaveWithBase(key, content string, ttl time.Duration, updatedBy s
 		return model.Clipboard{}, err
 	}
 
+	generation := current.Generation
+	if exists {
+		generation = s.existingGenerationLocked(generation)
+	} else {
+		generation = s.newGenerationLocked()
+	}
+
 	version := int64(1)
 	if exists {
 		version = current.Version + 1
 	}
 
 	item := model.Clipboard{
-		Doc:       doc,
-		Content:   content,
-		TTL:       ttl,
-		ExpiresAt: now.Add(ttl),
-		Version:   version,
-		UpdatedAt: now,
-		UpdatedBy: updatedBy,
+		Doc:        doc,
+		Content:    content,
+		TTL:        ttl,
+		ExpiresAt:  now.Add(ttl),
+		Version:    version,
+		Generation: generation,
+		UpdatedAt:  now,
+		UpdatedBy:  updatedBy,
 	}
 	s.putLocked(key, item, newBytes)
 	return cloneClipboard(item), nil
@@ -193,12 +209,14 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 
 	var doc *crdt.Doc
 	var version int64
+	var generation int64
 	var curTTL time.Duration
 	ttlChanged := false
 
 	if exists {
 		doc = current.Doc.Clone()
 		version = current.Version
+		generation = s.existingGenerationLocked(current.Generation)
 		curTTL = current.TTL
 	} else {
 		doc = crdt.NewDoc()
@@ -206,6 +224,7 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		if ttl <= 0 {
 			return model.Clipboard{}, false, fmt.Errorf("ttlSeconds required for new clipboard")
 		}
+		generation = s.newGenerationLocked()
 		curTTL = ttl
 	}
 	if ttl > 0 && ttl != curTTL {
@@ -244,13 +263,14 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 				return model.Clipboard{}, false, err
 			}
 			item := model.Clipboard{
-				Doc:       working,
-				Content:   content,
-				TTL:       curTTL,
-				ExpiresAt: now.Add(curTTL),
-				Version:   1,
-				UpdatedAt: now,
-				UpdatedBy: updatedBy,
+				Doc:        working,
+				Content:    content,
+				TTL:        curTTL,
+				ExpiresAt:  now.Add(curTTL),
+				Version:    1,
+				Generation: generation,
+				UpdatedAt:  now,
+				UpdatedBy:  updatedBy,
 			}
 			s.putLocked(key, item, newBytes)
 			return cloneClipboard(item), false, nil
@@ -258,6 +278,7 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		// TTL refresh / idempotent re-apply — size unchanged.
 		current.ExpiresAt = now.Add(curTTL)
 		current.TTL = curTTL
+		current.Generation = generation
 		current.UpdatedAt = now
 		if ttlChanged {
 			current.Version++
@@ -274,16 +295,39 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 	}
 
 	item := model.Clipboard{
-		Doc:       working,
-		Content:   content,
-		TTL:       curTTL,
-		ExpiresAt: now.Add(curTTL),
-		Version:   version + 1,
-		UpdatedAt: now,
-		UpdatedBy: updatedBy,
+		Doc:        working,
+		Content:    content,
+		TTL:        curTTL,
+		ExpiresAt:  now.Add(curTTL),
+		Version:    version + 1,
+		Generation: generation,
+		UpdatedAt:  now,
+		UpdatedBy:  updatedBy,
 	}
 	s.putLocked(key, item, newBytes)
 	return cloneClipboard(item), true, nil
+}
+
+// newGenerationLocked returns a process-wide monotonic room incarnation. The
+// timestamp seed keeps a restarted process from immediately reusing an old
+// client's generation, while staying exactly representable in JavaScript and
+// avoiding an unbounded per-key tombstone map.
+func (s *Store) newGenerationLocked() int64 {
+	s.nextGeneration++
+	if s.nextGeneration <= 0 {
+		s.nextGeneration = 1
+	}
+	return s.nextGeneration
+}
+
+func (s *Store) existingGenerationLocked(generation int64) int64 {
+	if generation <= 0 {
+		return s.newGenerationLocked()
+	}
+	if generation > s.nextGeneration {
+		s.nextGeneration = generation
+	}
+	return generation
 }
 
 func (s *Store) getLiveLocked(key string, now time.Time) (model.Clipboard, bool) {
@@ -293,6 +337,12 @@ func (s *Store) getLiveLocked(key string, now time.Time) (model.Clipboard, bool)
 	}
 	if !current.ExpiresAt.After(now) {
 		s.removeLocked(key)
+		if s.onExpire != nil {
+			// Keep the callback under the Store lock. Otherwise a new room with
+			// the same key could be created before the old-room notification
+			// clears its cached event.
+			s.onExpire(key)
+		}
 		return model.Clipboard{}, false
 	}
 	if current.Doc == nil {

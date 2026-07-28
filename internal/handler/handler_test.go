@@ -133,6 +133,31 @@ func TestExpiredClipboardIsRemoved(t *testing.T) {
 	}
 }
 
+func TestExpiredClipboardClearsLastEvent(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	st := store.New(store.WithClock(func() time.Time { return now }))
+	h := newTestHandlerWithStore(st)
+	st.SetOnExpire(h.PingExpired)
+
+	item, err := st.Save("expired-event", "old", time.Second, "writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.noteFullState("expired-event", item.Version, item.Generation, item.UpdatedBy, item.Content)
+
+	now = now.Add(2 * time.Second)
+	if _, ok := st.Get("expired-event"); ok {
+		t.Fatal("expired room should not exist")
+	}
+
+	h.eventMu.Lock()
+	_, cached := h.lastEvent["expired-event"]
+	h.eventMu.Unlock()
+	if cached {
+		t.Fatal("expired room event should be removed")
+	}
+}
+
 func TestRejectsCapacityExceeded(t *testing.T) {
 	st := store.New(store.WithLimits(1, store.DefaultMaxTotalBytes))
 	h := newTestHandlerWithStore(st)
@@ -717,7 +742,7 @@ func TestWebSocketNoOpsGapAfterCoalescedUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.noteOps("gap", cur.Version, "w", []crdt.Op{{Op: crdt.OpInsert, ID: "w:3", After: "w:2", Ch: "B"}}, cur.Content)
+	h.noteOps("gap", cur.Version, cur.Generation, "w", []crdt.Op{{Op: crdt.OpInsert, ID: "w:3", After: "w:2", Ch: "B"}}, cur.Content)
 	h.broker.ping("gap")
 
 	for {

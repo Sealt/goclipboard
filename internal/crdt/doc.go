@@ -201,13 +201,25 @@ func BuildFromString(site, content string) (*Doc, error) {
 	return d, nil
 }
 
+// walk visits items in pre-order DFS. Iterative because sequentially typed
+// text forms a chain whose depth equals the document length (up to ~1M items).
 func (d *Doc) walk(parent string, fn func(*Item)) {
-	for _, cid := range d.children[parent] {
-		item := d.items[cid]
+	kids := d.children[parent]
+	stack := make([]string, 0, len(kids))
+	for i := len(kids) - 1; i >= 0; i-- {
+		stack = append(stack, kids[i])
+	}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		item := d.items[id]
 		if item == nil {
 			continue
 		}
 		fn(item)
-		d.walk(cid, fn)
+		kids = d.children[id]
+		for i := len(kids) - 1; i >= 0; i-- {
+			stack = append(stack, kids[i])
+		}
 	}
 }
