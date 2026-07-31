@@ -159,6 +159,7 @@ docker compose up -d
 ```sh
 make run          # 开发服务器 :8080
 make test         # go test ./...
+make test-js      # 前端 crdt.js 交叉收敛测试（需 node）
 make test-cover   # 覆盖率报告 → coverage.html
 make build        # 编译单个静态二进制
 ```

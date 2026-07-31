@@ -1,4 +1,4 @@
-.PHONY: run build test test-cover clean
+.PHONY: run build test test-js test-cover clean
 
 run:
 	go run .
@@ -8,6 +8,9 @@ build:
 
 test:
 	go test ./...
+
+test-js:
+	node static/crdt.test.js
 
 test-cover:
 	go test -coverprofile=coverage.out ./...

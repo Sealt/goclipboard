@@ -159,6 +159,7 @@ Multi-arch (`linux/amd64`, `linux/arm64`, …) scratch image — no shell, no li
 ```sh
 make run          # dev server on :8080
 make test         # go test ./...
+make test-js      # crdt.js cross-convergence tests (needs node)
 make test-cover   # coverage report → coverage.html
 make build        # single static binary
 ```
