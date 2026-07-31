@@ -176,4 +176,4 @@ static/                frontend: app.js + crdt.js (vanilla JS, no build step)
 
 ## 📜 License
 
-Choose one — add a `LICENSE` file and update this section. (Nothing here yet.)
+Released under the [MIT](LICENSE) license — see the [LICENSE](LICENSE) file.

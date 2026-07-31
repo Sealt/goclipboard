@@ -176,4 +176,4 @@ static/               前端：app.js + crdt.js（原生 JS，无构建步骤）
 
 ## 📜 License
 
-选择一个开源协议 —— 添加 `LICENSE` 文件后更新本节。（当前尚未选择。）
+本项目基于 [MIT](LICENSE) 协议开源 —— 详见 [LICENSE](LICENSE) 文件。
