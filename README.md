@@ -1,182 +1,179 @@
-# goclipboard
+<div align="center">
 
-A lightweight, single-binary temporary cloud clipboard. Share text snippets via unique URLs with configurable TTL.
+<img src="docs/logo.svg" width="120" alt="GoClipboard" />
 
-## Features
+# GoClipboard
 
-- Auto-generated random clipboard URLs
-- Auto-save with configurable TTL
-- **Real-time collaborative editing** via character-level CRDT (insert-after RGA)
-- Remote carets / selections over WebSocket
-- **File paste** per room — stored on disk; admin password for upload/delete, per-file password for download; list is open
-- In-memory storage with automatic cleanup
-- Per-IP rate limiting
-- Health check endpoint
-- Structured JSON logging
-- Graceful shutdown
-- Docker support with minimal scratch image
+**一个轻量、实时协作的临时云剪贴板 —— 单个二进制即可自托管。**
 
-## Quick Start
+分享文本和文件，只需要一个 URL。内容实时同步，到期自动销毁。
+
+[English](README.en.md) | 简体中文
+
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-scratch%20镜像-2496ed?logo=docker&logoColor=white)
+![CRDT](https://img.shields.io/badge/同步-RGA%20CRDT-7c3aed)
+![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+
+</div>
+
+---
+
+## 为什么需要它？
+
+密码、SSH key、一行命令、配置片段、随手要发的截图——把内容从一台机器弄到另一台机器，不应该需要注册账号、登录流程，或者再装一个记笔记的 App。
+
+GoClipboard 给你一个 **URL**：把内容贴进房间，分享链接，所有打开的人实时看到同步结果。它到期自动清理、没有数据库、整个服务就是一个静态二进制，跑在任何机器上。
+
+## ✨ 特性
+
+- ⚡ **单二进制、零运行时依赖** —— Go 静态编译约 10 MB，Docker 镜像直接基于 `scratch`
+- 🔗 **URL 即分享** —— 每个剪贴板随机生成 key，TTL 按分钟/小时/天设定，到期自动清理
+- 👥 **实时协作编辑** —— 基于字符级 **RGA CRDT**，通过 WebSocket 同步：多人并发编辑自动合并，互不覆盖，弱网也不怕
+- 🖱️ **远程光标与选区** —— 实时看到协作者的输入位置，每人一个专属颜色
+- 📁 **房间文件分享** —— 拖入文件即得链接；落盘存储，每个文件独立下载密码，上传/删除需管理员密码
+- 🔐 **密码只存哈希** —— 文件密码仅保存 salt + SHA-256
+- 🚦 **防滥用** —— 按 IP 限流 + 自适应黑名单，扫描者自动封禁 30 分钟
+- 🧹 **内存自限** —— 内存预算封顶；写满时返回 `HTTP 507` + `Retry-After`
+- 📊 **可运维** —— 结构化 JSON 日志、`/healthz` 健康检查、优雅停机
+- 🐳 **部署简单** —— 多架构 Docker 构建，`docker compose up` 一条命令
+- 🇨🇳 **中文界面** —— 简洁的单页前端，无框架、无构建步骤
+
+## 🖼️ 界面截图
+
+<img src="docs/screenshot.png" width="720" alt="GoClipboard 编辑器：实时 CRDT 内容、TTL 选择、在线成员与同步状态" />
+
+## 🚀 快速开始
 
 ```sh
 go run .
-```
-
-Open http://localhost:8080 — you'll be redirected to a new clipboard.
-
-```sh
+# 或
 make run
 ```
 
-## Configuration
+打开 **http://localhost:8080** —— 自动跳转到一个全新的剪贴板，完事。
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT`   | `8080`  | Server listen port |
-| `MAX_ROOMS` | `10000` | Max live clipboard rooms (in-memory) |
-| `MAX_MEMORY_MB` | `256` | Estimated store budget for content + CRDT atoms |
-| `UPLOAD_PASSWORD` | _(empty)_ | **Admin password** for file upload and delete. Empty disables file features |
-| `FILE_DIR` | `data/files` | On-disk root for uploaded files (`{FILE_DIR}/{room}/{id}.bin`) |
-
-When text-clipboard capacity is exceeded, writes return **HTTP 507** with `Retry-After: 60`. Existing rooms can still shrink or refresh TTL; new rooms and growth that would exceed the budget are rejected.
-
-Set `UPLOAD_PASSWORD` to enable file paste. Files are stored **on disk** under `FILE_DIR` (no per-file / count caps). Anyone with the room URL can **list** metadata.
-
-- **Per-room upload switch**: each space defaults to **upload off**. An admin **triple-clicks the room name** (path) to toggle it (admin password required). Setting is persisted under `{FILE_DIR}/{room}/settings.json`.
-- **Upload**:
-  - room **open** → only a **file password**
-  - room **closed** → **admin password** + file password (one-shot; does not open the room for others)
-- **Download**: requires that file's password.
-- **Delete** / **toggle room upload**: require admin password.
-
-File passwords are stored only as salt+SHA-256 hash next to the blob. Files still expire with the TTL you set at upload.
-
-## Collaboration model
-
-Concurrent edits merge at **Unicode code-point** granularity (not last-write-wins on the whole string).
-
-- Each character is a CRDT atom with id `clientId:clock` and parent `after`.
-- `clock` is a **Lamport** timestamp (must exceed any clock already in the document).
-- Sibling order: higher clock first (so mid-string inserts stay next to the caret), then site id; document order is DFS from the root.
-- Deletes are tombstones (cleared when the room TTL expires).
-- Live typing is sent as WebSocket **ops**; late joiners receive a full **state** snapshot.
-- REST `PUT` still works as a **full document replace** (rebuilds the CRDT chain) for simple clients / offline fallback.
-
-## API
-
-### Get clipboard
-```http
-GET /api/clipboard/{key}
+```sh
+docker compose up -d          # 用 Docker 自托管
 ```
 
-### Save clipboard (full replace)
-```http
-PUT /api/clipboard/{key}
-Content-Type: application/json
+## 🧠 工作原理：CRDT，而不是后写覆盖
 
-{"content": "...", "ttlSeconds": 3600, "clientId": "optional"}
+文本编辑通常是场"打架"：两个人同时输入，后写的人覆盖先写的人。GoClipboard 用**字符级 CRDT**（insert-after RGA）绕开了这个问题：
+
+- 每个字符是一个原子：`id = clientId:clock`（Lamport 时间戳），带 `parent` 指针。
+- 并发插入在 **Unicode 码点**粒度合并 —— 不存在整串后写覆盖。
+- 兄弟节点顺序确定：clock 大者在前，再按站点 id 排序，所以中段插入总是待在光标旁边。
+- 删除是墓碑（tombstone），房间 TTL 到期时统一回收。
+- 实时输入以 WebSocket **ops** 增量同步；迟到者收到完整 **state** 快照；断线重连自动合并。
+- REST `PUT` 仍可整篇替换（支持 `baseVersion` 乐观并发，冲突返回 `409`），适合简单客户端和离线兜底。
+
+这也是弱网下依然稳定的原因：op 幂等、与顺序无关、重发成本极低。
+
+## 🔌 API
+
+### 剪贴板（REST）
+
+```http
+GET    /api/clipboard/{key}              # 读取内容 + 版本
+PUT    /api/clipboard/{key}              # 整篇替换
+DELETE /api/clipboard/{key}              # 删除
 ```
 
-### Delete clipboard
-```http
-DELETE /api/clipboard/{key}
+```sh
+curl -X PUT localhost:8080/api/clipboard/AbC123 \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"hello 世界","ttlSeconds":3600,"clientId":"my-site"}'
 ```
 
-### Real-time (WebSocket)
+`PUT` 支持可选的 `baseVersion` 乐观并发：过期覆盖会被拒绝并返回 `409`（附当前状态），离线/REST 客户端可以据此合并而不是盲目覆盖。
+
+### 实时同步（WebSocket）
+
 ```http
 GET /api/clipboard/{key}/ws?clientId={id}
-Upgrade: websocket
 ```
 
-**Server → client**
+**服务端 → 客户端**
 
-| type | meaning |
-|------|---------|
-| `state` | Full CRDT snapshot (`items`, linearized `content`, version, TTL) |
-| `ops` | Applied op batch + `version` / `content` |
-| `cursor` | Remote carets / selections (code-point offsets) |
-| `files` | File list metadata for the room (`files[]`, `filesVersion`) after upload/delete/expiry |
+| type     | 含义                                              |
+|----------|---------------------------------------------------|
+| `state`  | 完整 CRDT 快照：`items`、线性化 `content`、版本号 |
+| `ops`    | 已应用的 op 批次 + `version` / `content`          |
+| `cursor` | 远程光标 / 选区（码点偏移）                       |
+| `files`  | 文件列表元数据（上传/删除/过期后推送）            |
 
-**Client → server**
+**客户端 → 服务端**
 
 ```json
 {"type":"ops","ops":[{"op":"ins","id":"a:1","after":"","ch":"x"}],"ttlSeconds":3600}
 {"type":"cursor","cursorPos":0,"selectionEnd":0,"color":"#61afef"}
 ```
 
-Op shapes:
+op 类型：`ins`（`id`、`after`、`ch` —— 恰好一个码点）与 `del`（`id`）。
 
-- Insert: `{"op":"ins","id":"site:clock","after":"parentId-or-empty","ch":"一"}` — `ch` is exactly one code point
-- Delete: `{"op":"del","id":"site:clock"}`
+**限制：** 内容 ≤ 1 MiB · 每批 ≤ 4096 ops · 每条 WS 消息 ≤ 256 KiB。
 
-Limits: content ≤ 1 MiB; ≤ 4096 ops per batch; WebSocket messages ≤ 256 KiB; global room count + estimated memory budget (see Configuration).
+### 文件分享
 
-### File list
-```http
-GET /api/clipboard/{key}/files
-```
+| 操作                                  | 鉴权                                  |
+|---------------------------------------|---------------------------------------|
+| `GET  /files`                         | 公开（有房间 URL 即可）               |
+| `POST /files`（multipart）            | 房间开放 → 文件密码；未开放 → 管理员密码 + 文件密码 |
+| `GET  /files/{id}`                    | 该文件的密码（`X-File-Password` 或 `?filePassword=` / `?password=`） |
+| `DELETE /files/{id}`                  | 管理员密码                            |
+| `GET/PUT /settings`（上传开关）       | 管理员密码                            |
 
-### Room settings (admin)
-```http
-GET /api/clipboard/{key}/settings
-→ {"key":"...","fileUploadEnabled":false}
+房间默认**关闭上传**。管理员**三击房间名**（路径）即可切换开关，设置持久化在磁盘上。文件随房间 TTL 一起过期。管理员密码来自 `UPLOAD_PASSWORD`；留空则整个文件功能停用。
 
-PUT /api/clipboard/{key}/settings
-Content-Type: application/json
-X-Admin-Password: <UPLOAD_PASSWORD>
+### 健康检查
 
-{"fileUploadEnabled":true,"adminPassword":"<UPLOAD_PASSWORD>"}
-```
-
-### Upload file
-```http
-POST /api/clipboard/{key}/files
-Content-Type: multipart/form-data
-
-file: <binary>
-filePassword: <per-file download password>
-ttlSeconds: 3600
-# When room is closed, also send admin password:
-# X-Admin-Password: <UPLOAD_PASSWORD>
-# adminPassword: <UPLOAD_PASSWORD>
-```
-
-If `fileUploadEnabled=true`, only `filePassword` is required. If the room is closed, admin password is required for that upload (does not auto-enable the room). Response is `201` with file metadata (`id`, `name`, `size`, …).
-
-### Download file (file password)
-```http
-GET /api/clipboard/{key}/files/{id}
-X-File-Password: <per-file download password>
-```
-
-File password may also be passed as query `?filePassword=...` or `?password=...`.
-
-### Delete file (admin password)
-```http
-DELETE /api/clipboard/{key}/files/{id}
-X-Admin-Password: <UPLOAD_PASSWORD>
-```
-
-### Health check
 ```http
 GET /healthz
 ```
 
-## Docker
+## ⚙️ 配置
+
+全部通过环境变量：
+
+| 变量              | 默认值        | 说明                                              |
+|-------------------|---------------|---------------------------------------------------|
+| `PORT`            | `8080`        | 监听端口                                          |
+| `MAX_ROOMS`       | `10000`       | 最大存活房间数（内存中）                          |
+| `MAX_MEMORY_MB`   | `256`         | 内容 + CRDT 原子的内存预算，超出返回 `507`        |
+| `UPLOAD_PASSWORD` | _(空)_        | 文件上传/删除的管理员密码；留空停用文件功能        |
+| `FILE_DIR`        | `data/files`  | 上传文件的磁盘根目录（`{FILE_DIR}/{room}/{id}.bin`） |
+
+运维默认值：限流 10 req/s（burst 20）、自适应黑名单（硬阈值 5、扫描阈值 10、窗口 30 s、封禁 30 分钟）、每分钟清理一轮、优雅停机 10 秒。
+
+## 🐳 Docker
 
 ```sh
 docker compose up -d
 ```
 
-## Build
+多架构（`linux/amd64`、`linux/arm64` 等）`scratch` 镜像——无 shell、无 libc，只有二进制和 CA 证书。自带健康检查，数据持久化在命名卷中。
+
+## 🛠️ 开发
 
 ```sh
-make build
+make run          # 开发服务器 :8080
+make test         # go test ./...
+make test-cover   # 覆盖率报告 → coverage.html
+make build        # 编译单个静态二进制
 ```
 
-## Test
+代码量小，结构刻意保持朴素：
 
-```sh
-make test
-make test-cover
 ```
+main.go               入口：配置、中间件、优雅停机
+internal/crdt/        RGA 序列 CRDT（插入 / 删除 / 物化 / 快照）
+internal/store/       内存房间存储 + 磁盘文件存储、TTL 清理
+internal/handler/     HTTP + WebSocket 路由、文件上传下载
+internal/middleware/  限流、黑名单、安全头、请求日志
+static/               前端：app.js + crdt.js（原生 JS，无构建步骤）
+```
+
+## 📜 License
+
+选择一个开源协议 —— 添加 `LICENSE` 文件后更新本节。（当前尚未选择。）
