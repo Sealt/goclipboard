@@ -181,7 +181,12 @@ func TestFromItemsRoundtripRandom(t *testing.T) {
 			}
 		}
 		want := d.Materialize()
-		items := d.Items()
+		// Snapshot the original DFS item sequence before shuffling: the
+		// roundtrip must reproduce the full tree structure (ids, parents,
+		// values, tombstones), not just the materialized text — a broken
+		// parent pointer could otherwise slip through.
+		orig := append([]Item(nil), d.Items()...)
+		items := append([]Item(nil), orig...)
 		rng.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
 		rebuilt := NewDoc()
 		if err := rebuilt.FromItems(items); err != nil {
@@ -189,6 +194,9 @@ func TestFromItemsRoundtripRandom(t *testing.T) {
 		}
 		if got := rebuilt.Materialize(); got != want {
 			t.Fatalf("seed %d: roundtrip diverged: %q vs %q", seed, got, want)
+		}
+		if !sameItems(rebuilt.Items(), orig) {
+			t.Fatalf("seed %d: roundtrip item structure diverged", seed)
 		}
 	}
 }

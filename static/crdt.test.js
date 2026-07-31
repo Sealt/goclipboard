@@ -167,6 +167,7 @@ check("fromItems roundtrip (shuffled)", () => {
     const d = new Doc();
     applyAll(d, sc.ops);
     const want = d.materialize();
+    const orig = itemsOf(d); // structural snapshot incl. parent pointers
     const items = d.toItems();
     for (let i = items.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -176,6 +177,7 @@ check("fromItems roundtrip (shuffled)", () => {
     const r = rebuilt.fromItems(items);
     assert.ok(r.ok, "seed " + seed + ": fromItems " + (r.error || ""));
     assert.strictEqual(rebuilt.materialize(), want, "seed " + seed + " roundtrip diverged");
+    assert.deepStrictEqual(itemsOf(rebuilt), orig, "seed " + seed + " roundtrip item structure diverged");
   }
 });
 
