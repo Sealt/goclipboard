@@ -73,6 +73,11 @@ func SanitizeFileName(name string) (string, error) {
 	name = filepath.Base(name)
 	name = strings.ReplaceAll(name, "\\", "")
 	name = strings.ReplaceAll(name, "/", "")
+	// Reject invalid UTF-8 before rune processing (ranging would otherwise
+	// silently replace bad bytes with U+FFFD and mask the input problem).
+	if !utf8.ValidString(name) {
+		return "", ErrInvalidFile
+	}
 	// Drop control characters.
 	var b strings.Builder
 	for _, r := range name {
@@ -85,18 +90,17 @@ func SanitizeFileName(name string) (string, error) {
 	if name == "" || name == "." || name == ".." {
 		return "", ErrInvalidFile
 	}
-	if !utf8.ValidString(name) {
-		return "", ErrInvalidFile
-	}
-	// Cap display name length (bytes).
+	// Cap display name length (bytes), always rune-safe: byte slicing here
+	// would split multi-byte characters and produce invalid UTF-8.
 	if len(name) > 200 {
-		// Prefer rune-safe truncation.
 		runes := []rune(name)
 		if len(runes) > 120 {
-			name = string(runes[:120])
-		} else {
-			name = name[:200]
+			runes = runes[:120]
 		}
+		for len(runes) > 0 && len(string(runes)) > 200 {
+			runes = runes[:len(runes)-1]
+		}
+		name = string(runes)
 	}
 	return name, nil
 }
