@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -560,4 +561,92 @@ func TestSaveWithBaseConflict(t *testing.T) {
 	if _, err := st.SaveWithBase("room", "v4", time.Hour, "c", 0); err != nil {
 		t.Fatalf("legacy save: %v", err)
 	}
+}
+
+// --- Peek (no-clone read) contract -------------------------------------------
+
+func TestPeekSharesDocument(t *testing.T) {
+	st := New()
+	mustSave(t, st, "demo", "hello world", time.Hour, "a")
+
+	first, ok1 := st.Peek("demo")
+	second, ok2 := st.Peek("demo")
+	if !ok1 || !ok2 {
+		t.Fatal("expected item to exist")
+	}
+	if first.Doc != second.Doc {
+		t.Fatal("Peek must not clone: two Peek calls returned different *Doc pointers")
+	}
+
+	// Get stays the defensive API: it must return an isolated clone.
+	cloned, ok := st.Get("demo")
+	if !ok {
+		t.Fatal("expected item to exist")
+	}
+	if cloned.Doc == first.Doc {
+		t.Fatal("Get must return a defensive clone, not the shared document")
+	}
+}
+
+func TestPeekDocumentSurvivesApplyOps(t *testing.T) {
+	// The safety contract behind Peek: a previously returned *Doc is never
+	// mutated in place by later writes, so readers can hold the reference
+	// across concurrent room updates.
+	st := New()
+	mustSave(t, st, "demo", "hello", time.Hour, "a")
+
+	peeked, ok := st.Peek("demo")
+	if !ok {
+		t.Fatal("expected item to exist")
+	}
+	oldDoc := peeked.Doc
+	oldText := oldDoc.Materialize()
+
+	// A write must replace the stored document, not mutate the old one.
+	// Clock must exceed the document max (5) for a mid-string insert (Lamport).
+	_, _, err := st.ApplyOps("demo", []crdt.Op{{Op: crdt.OpInsert, ID: "b:6", After: "a:1", Ch: "X"}}, 0, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldDoc.Materialize() != oldText {
+		t.Fatal("ApplyOps mutated the document previously returned by Peek")
+	}
+	cur, ok := st.Get("demo")
+	if !ok || cur.Content != "hXello" {
+		t.Fatalf("stored document should have been replaced: %q", cur.Content)
+	}
+}
+
+func TestPeekConcurrentWithApplyOps(t *testing.T) {
+	// Run with -race: Peek readers sharing the stored document while writers
+	// replace rooms must not race or observe torn state.
+	st := New()
+	mustSave(t, st, "demo", "hello", time.Hour, "a")
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if item, ok := st.Peek("demo"); ok {
+					_ = item.Doc.Materialize()
+					_ = item.Content
+					_ = item.Version
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 500; i++ {
+		if _, _, err := st.ApplyOps("demo", []crdt.Op{{Op: crdt.OpInsert, ID: "b:" + strconv.Itoa(i+1), After: "", Ch: "X"}}, 0, "b"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
