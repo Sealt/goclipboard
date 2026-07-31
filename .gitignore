@@ -1,2 +1,17 @@
-.playwright-cli/
+# macOS
 .DS_Store
+._*
+
+# tooling
+.playwright-cli/
+
+# runtime data (uploaded files, room settings)
+data/
+
+# build / coverage artifacts
+/goclipboard
+coverage.out
+coverage.html
+
+# logs
+*.log
