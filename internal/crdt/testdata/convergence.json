@@ -1,0 +1,1973 @@
+[
+  {
+    "name": "empty",
+    "ops": null,
+    "expected": ""
+  },
+  {
+    "name": "head-inserts-same-clock",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "a:1",
+        "ch": "A"
+      },
+      {
+        "op": "ins",
+        "id": "b:1",
+        "ch": "B"
+      }
+    ],
+    "expected": "AB"
+  },
+  {
+    "name": "same-parent-equal-clock",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "a:1",
+        "ch": "x"
+      },
+      {
+        "op": "ins",
+        "id": "b:1",
+        "after": "a:1",
+        "ch": "B"
+      },
+      {
+        "op": "ins",
+        "id": "c:1",
+        "after": "a:1",
+        "ch": "C"
+      }
+    ],
+    "expected": "xBC"
+  },
+  {
+    "name": "mid-string-insert",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s:1",
+        "ch": "h"
+      },
+      {
+        "op": "ins",
+        "id": "s:2",
+        "after": "s:1",
+        "ch": "e"
+      },
+      {
+        "op": "ins",
+        "id": "s:3",
+        "after": "s:2",
+        "ch": "l"
+      },
+      {
+        "op": "ins",
+        "id": "s:4",
+        "after": "s:3",
+        "ch": "l"
+      },
+      {
+        "op": "ins",
+        "id": "s:5",
+        "after": "s:4",
+        "ch": "o"
+      },
+      {
+        "op": "ins",
+        "id": "c:6",
+        "after": "s:1",
+        "ch": "X"
+      }
+    ],
+    "expected": "hXello"
+  },
+  {
+    "name": "delete-middle",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s:1",
+        "ch": "h"
+      },
+      {
+        "op": "ins",
+        "id": "s:2",
+        "after": "s:1",
+        "ch": "e"
+      },
+      {
+        "op": "ins",
+        "id": "s:3",
+        "after": "s:2",
+        "ch": "l"
+      },
+      {
+        "op": "ins",
+        "id": "s:4",
+        "after": "s:3",
+        "ch": "l"
+      },
+      {
+        "op": "ins",
+        "id": "s:5",
+        "after": "s:4",
+        "ch": "o"
+      },
+      {
+        "op": "del",
+        "id": "s:3"
+      }
+    ],
+    "expected": "helo"
+  },
+  {
+    "name": "nested-concurrent",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "a:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "a:2",
+        "after": "a:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "b:1",
+        "after": "a:1",
+        "ch": "X"
+      },
+      {
+        "op": "ins",
+        "id": "b:2",
+        "after": "b:1",
+        "ch": "Y"
+      },
+      {
+        "op": "ins",
+        "id": "c:1",
+        "after": "a:2",
+        "ch": "Z"
+      },
+      {
+        "op": "del",
+        "id": "b:1"
+      }
+    ],
+    "expected": "abZY"
+  },
+  {
+    "name": "multibyte",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "a:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "a:2",
+        "after": "a:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "b:1",
+        "after": "a:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "c:1",
+        "after": "a:2",
+        "ch": "文"
+      },
+      {
+        "op": "del",
+        "id": "b:1"
+      }
+    ],
+    "expected": "中😀文"
+  },
+  {
+    "name": "insert-under-tombstone",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "a:1",
+        "ch": "1"
+      },
+      {
+        "op": "ins",
+        "id": "a:2",
+        "after": "a:1",
+        "ch": "2"
+      },
+      {
+        "op": "del",
+        "id": "a:1"
+      },
+      {
+        "op": "ins",
+        "id": "b:1",
+        "after": "a:1",
+        "ch": "!"
+      },
+      {
+        "op": "ins",
+        "id": "a:3",
+        "after": "a:2",
+        "ch": "3"
+      }
+    ],
+    "expected": "23!"
+  },
+  {
+    "name": "random-0",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "after": "s0:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "after": "s3:1",
+        "ch": " "
+      },
+      {
+        "op": "del",
+        "id": "s1:1"
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s1:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:2",
+        "after": "s2:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "after": "s2:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s2:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "after": "s0:4",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "after": "s0:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s2:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "after": "s3:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s1:3",
+        "after": "s2:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "after": "s2:3",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:4",
+        "after": "s0:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s1:4",
+        "after": "s3:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:7",
+        "after": "s2:3",
+        "ch": "😀"
+      },
+      {
+        "op": "del",
+        "id": "s1:2"
+      },
+      {
+        "op": "ins",
+        "id": "s2:5",
+        "after": "s3:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s0:8",
+        "after": "s2:4",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s2:6",
+        "after": "s2:3",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:5",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:7",
+        "after": "s1:5",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:6",
+        "after": "s0:5",
+        "ch": "\n"
+      }
+    ],
+    "expected": " b  \n中λb\n\n😀 a λ\n😀\n aa"
+  },
+  {
+    "name": "random-1",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "ch": "λ"
+      },
+      {
+        "op": "del",
+        "id": "s2:1"
+      }
+    ],
+    "expected": "a"
+  },
+  {
+    "name": "random-2",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "after": "s1:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:2",
+        "after": "s0:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "after": "s0:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "after": "s1:2",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s1:2",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s2:2"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "after": "s0:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "after": "s0:1",
+        "ch": "λ"
+      },
+      {
+        "op": "del",
+        "id": "s1:2"
+      },
+      {
+        "op": "ins",
+        "id": "s1:3",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s3:3",
+        "after": "s3:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:4",
+        "after": "s2:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s2:2",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:5",
+        "after": "s2:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:4",
+        "after": "s3:3",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:4",
+        "after": "s2:3",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s3:5",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s2:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:6",
+        "after": "s2:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:7",
+        "after": "s3:6",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:5",
+        "after": "s2:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:8",
+        "after": "s0:5",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "after": "s0:3",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:9",
+        "after": "s3:6",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:10",
+        "after": "s3:7",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s3:4"
+      },
+      {
+        "op": "ins",
+        "id": "s0:7",
+        "after": "s1:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:8",
+        "after": "s3:10",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s3:11",
+        "after": "s2:5",
+        "ch": "😀"
+      }
+    ],
+    "expected": "\n\n中😀中中λ\n 😀中a\nba\nb中中中b bλ😀λ"
+  },
+  {
+    "name": "random-3",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "after": "s2:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "after": "s1:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "after": "s3:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s3:2",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s3:3",
+        "after": "s2:2",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "after": "s0:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s0:3",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s3:1",
+        "ch": "😀"
+      },
+      {
+        "op": "del",
+        "id": "s0:5"
+      },
+      {
+        "op": "del",
+        "id": "s3:3"
+      },
+      {
+        "op": "ins",
+        "id": "s3:4",
+        "after": "s0:5",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "after": "s3:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "after": "s2:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:7",
+        "after": "s0:4",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:8",
+        "ch": "😀"
+      }
+    ],
+    "expected": "😀a😀b λ😀λ😀中😀中 \n"
+  },
+  {
+    "name": "random-4",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s2:1"
+      },
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "after": "s2:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "after": "s2:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "ch": " "
+      },
+      {
+        "op": "del",
+        "id": "s2:1"
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "after": "s3:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:2",
+        "after": "s3:2",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s1:2"
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "after": "s3:2",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:3",
+        "after": "s1:2",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:4",
+        "after": "s2:2",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:3",
+        "after": "s2:2",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:4",
+        "after": "s2:3",
+        "ch": "a"
+      },
+      {
+        "op": "del",
+        "id": "s3:3"
+      },
+      {
+        "op": "del",
+        "id": "s1:2"
+      },
+      {
+        "op": "ins",
+        "id": "s3:5",
+        "after": "s3:3",
+        "ch": "b"
+      },
+      {
+        "op": "del",
+        "id": "s2:2"
+      },
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "after": "s3:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s2:5",
+        "after": "s3:3",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:6",
+        "after": "s3:4",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:4",
+        "after": "s2:5",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:5",
+        "after": "s2:4",
+        "ch": "λ"
+      },
+      {
+        "op": "del",
+        "id": "s3:1"
+      },
+      {
+        "op": "ins",
+        "id": "s1:6",
+        "after": "s2:2",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s3:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s2:7",
+        "after": "s1:4",
+        "ch": "λ"
+      },
+      {
+        "op": "del",
+        "id": "s2:3"
+      },
+      {
+        "op": "ins",
+        "id": "s1:7",
+        "after": "s2:7",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "after": "s1:7",
+        "ch": "😀"
+      },
+      {
+        "op": "del",
+        "id": "s0:1"
+      },
+      {
+        "op": "del",
+        "id": "s2:3"
+      },
+      {
+        "op": "ins",
+        "id": "s1:8",
+        "after": "s2:4",
+        "ch": "λ"
+      },
+      {
+        "op": "del",
+        "id": "s3:1"
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s1:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:8",
+        "after": "s0:4",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:9",
+        "after": "s1:7",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s1:9",
+        "after": "s3:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:10",
+        "after": "s3:2",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s3:6",
+        "after": "s0:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s2:2",
+        "ch": "λ"
+      },
+      {
+        "op": "del",
+        "id": "s0:3"
+      },
+      {
+        "op": "ins",
+        "id": "s2:10",
+        "after": "s0:3",
+        "ch": "a"
+      },
+      {
+        "op": "del",
+        "id": "s1:2"
+      },
+      {
+        "op": "ins",
+        "id": "s1:11",
+        "after": "s1:4",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "after": "s1:3",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s2:11",
+        "after": "s1:10",
+        "ch": "a"
+      }
+    ],
+    "expected": "aλbλλ 😀aλ中λab\n 中😀λ😀 aaba😀a"
+  },
+  {
+    "name": "random-5",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "after": "s1:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:2",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s1:3",
+        "after": "s1:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:4",
+        "after": "s1:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "after": "s1:4",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "after": "s2:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s1:2",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "after": "s1:2",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "after": "s0:2",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s1:4",
+        "ch": "b"
+      },
+      {
+        "op": "del",
+        "id": "s0:1"
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s2:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "after": "s1:3",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s3:3",
+        "after": "s0:2",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:4",
+        "after": "s3:2",
+        "ch": "\n"
+      },
+      {
+        "op": "del",
+        "id": "s1:1"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "after": "s0:3",
+        "ch": "\n"
+      },
+      {
+        "op": "del",
+        "id": "s1:3"
+      },
+      {
+        "op": "ins",
+        "id": "s0:7",
+        "after": "s1:4",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s0:4"
+      },
+      {
+        "op": "ins",
+        "id": "s1:5",
+        "after": "s1:2",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "after": "s2:2",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s1:6",
+        "after": "s3:3",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s2:4",
+        "after": "s1:6",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s0:8",
+        "after": "s0:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:9",
+        "after": "s0:6",
+        "ch": "b"
+      },
+      {
+        "op": "del",
+        "id": "s2:3"
+      },
+      {
+        "op": "ins",
+        "id": "s0:10",
+        "after": "s3:3",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:11",
+        "after": "s0:3",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:5",
+        "after": "s0:6",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s2:6",
+        "after": "s0:4",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:7",
+        "after": "s2:5",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:5",
+        "after": "s0:5",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:8",
+        "after": "s2:7",
+        "ch": " "
+      },
+      {
+        "op": "del",
+        "id": "s0:6"
+      },
+      {
+        "op": "ins",
+        "id": "s2:9",
+        "after": "s3:2",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:6",
+        "after": "s3:4",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s3:6"
+      },
+      {
+        "op": "ins",
+        "id": "s0:12",
+        "after": "s0:5",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:7",
+        "after": "s3:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s1:7",
+        "after": "s3:7",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s3:8",
+        "after": "s1:2",
+        "ch": "\n"
+      },
+      {
+        "op": "del",
+        "id": "s2:7"
+      },
+      {
+        "op": "ins",
+        "id": "s2:10",
+        "after": "s1:2",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s2:11",
+        "after": "s2:5",
+        "ch": "😀"
+      }
+    ],
+    "expected": "\nb\nb  a\n\n\nbb中b\n中中中中\nλ   😀bλ😀 中"
+  },
+  {
+    "name": "random-6",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "after": "s2:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "after": "s1:1",
+        "ch": " "
+      },
+      {
+        "op": "del",
+        "id": "s3:1"
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "after": "s2:2",
+        "ch": "a"
+      },
+      {
+        "op": "del",
+        "id": "s1:1"
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s2:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:4",
+        "after": "s2:3",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s1:2",
+        "after": "s1:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s1:3",
+        "after": "s1:2",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "after": "s0:2",
+        "ch": "a"
+      },
+      {
+        "op": "del",
+        "id": "s2:4"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:5",
+        "after": "s2:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s2:4",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s3:3",
+        "after": "s2:3",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s2:2"
+      },
+      {
+        "op": "ins",
+        "id": "s2:6",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s1:4",
+        "after": "s2:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:5",
+        "after": "s2:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s2:6",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "after": "s2:4",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s1:6",
+        "after": "s2:3",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:4",
+        "after": "s2:2",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:7",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s2:7",
+        "after": "s1:5",
+        "ch": " "
+      },
+      {
+        "op": "del",
+        "id": "s2:7"
+      },
+      {
+        "op": "ins",
+        "id": "s0:7",
+        "after": "s3:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:8",
+        "after": "s3:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s1:9",
+        "after": "s3:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s1:10",
+        "after": "s3:4",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:11",
+        "after": "s1:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:8",
+        "after": "s3:4",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:5",
+        "after": "s0:3",
+        "ch": "中"
+      },
+      {
+        "op": "del",
+        "id": "s1:11"
+      },
+      {
+        "op": "ins",
+        "id": "s3:6",
+        "after": "s3:5",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:12",
+        "after": "s0:8",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:7",
+        "after": "s1:6",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s2:8",
+        "after": "s1:2",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s1:13",
+        "after": "s1:4",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:9",
+        "after": "s3:5",
+        "ch": "😀"
+      },
+      {
+        "op": "del",
+        "id": "s1:13"
+      },
+      {
+        "op": "del",
+        "id": "s2:7"
+      },
+      {
+        "op": "ins",
+        "id": "s1:14",
+        "after": "s1:13",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s1:15",
+        "after": "s3:7",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:9",
+        "after": "s1:4",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:8",
+        "after": "s1:12",
+        "ch": "b"
+      },
+      {
+        "op": "del",
+        "id": "s1:7"
+      },
+      {
+        "op": "ins",
+        "id": "s1:16",
+        "after": "s0:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s3:9",
+        "after": "s1:2",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:10",
+        "after": "s3:3",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s0:10",
+        "after": "s2:5",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:11",
+        "after": "s1:4",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s3:10",
+        "after": "s1:1",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:12",
+        "after": "s3:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s1:17",
+        "after": "s0:3",
+        "ch": "b"
+      },
+      {
+        "op": "del",
+        "id": "s1:11"
+      }
+    ],
+    "expected": "λλ b中😀b 中  😀a😀\nλbaλ\na中中中 λ 😀中b\n λaabb中 λa"
+  },
+  {
+    "name": "random-7",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s2:3",
+        "ch": "b"
+      },
+      {
+        "op": "del",
+        "id": "s0:1"
+      },
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "after": "s2:3",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "after": "s2:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s2:4",
+        "after": "s2:2",
+        "ch": "\n"
+      },
+      {
+        "op": "del",
+        "id": "s2:2"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "after": "s1:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s1:2",
+        "after": "s2:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:3",
+        "after": "s0:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "after": "s1:2",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s3:3",
+        "after": "s2:3",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s2:5",
+        "after": "s1:2",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:4",
+        "after": "s3:2",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s3:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:5",
+        "after": "s1:4",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s2:6",
+        "after": "s2:2",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:4",
+        "after": "s0:4",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:6",
+        "after": "s0:2",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s1:6",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:7",
+        "after": "s3:4",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:8",
+        "after": "s1:4",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s3:5",
+        "after": "s1:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s1:7",
+        "after": "s2:8",
+        "ch": "b"
+      },
+      {
+        "op": "del",
+        "id": "s3:4"
+      },
+      {
+        "op": "ins",
+        "id": "s3:6",
+        "after": "s2:6",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "after": "s3:3",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:7",
+        "after": "s2:5",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s3:7",
+        "after": "s3:4",
+        "ch": " "
+      }
+    ],
+    "expected": "a\n中bbaa\nλλb\nabbb中\na😀b 😀😀中 "
+  },
+  {
+    "name": "random-8",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "ch": "😀"
+      },
+      {
+        "op": "del",
+        "id": "s3:1"
+      }
+    ],
+    "expected": ""
+  },
+  {
+    "name": "random-9",
+    "ops": [
+      {
+        "op": "ins",
+        "id": "s0:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s1:1",
+        "after": "s0:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:1",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s2:2",
+        "after": "s2:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s0:2",
+        "after": "s2:1",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s0:3",
+        "after": "s0:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s3:1",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:4",
+        "after": "s0:1",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s2:3",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s1:2",
+        "after": "s2:3",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s0:5",
+        "after": "s2:3",
+        "ch": "\n"
+      },
+      {
+        "op": "del",
+        "id": "s0:1"
+      },
+      {
+        "op": "ins",
+        "id": "s0:6",
+        "ch": " "
+      },
+      {
+        "op": "ins",
+        "id": "s3:2",
+        "after": "s0:3",
+        "ch": "\n"
+      },
+      {
+        "op": "del",
+        "id": "s2:1"
+      },
+      {
+        "op": "ins",
+        "id": "s0:7",
+        "after": "s0:1",
+        "ch": "a"
+      },
+      {
+        "op": "del",
+        "id": "s2:2"
+      },
+      {
+        "op": "ins",
+        "id": "s1:3",
+        "after": "s0:2",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s0:8",
+        "after": "s0:4",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s0:9",
+        "after": "s0:4",
+        "ch": "λ"
+      },
+      {
+        "op": "ins",
+        "id": "s3:3",
+        "after": "s2:1",
+        "ch": "\n"
+      },
+      {
+        "op": "ins",
+        "id": "s2:4",
+        "after": "s1:3",
+        "ch": "😀"
+      },
+      {
+        "op": "del",
+        "id": "s2:2"
+      },
+      {
+        "op": "ins",
+        "id": "s2:5",
+        "after": "s2:1",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s0:10",
+        "after": "s0:3",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s1:4",
+        "after": "s2:5",
+        "ch": "中"
+      },
+      {
+        "op": "ins",
+        "id": "s1:5",
+        "after": "s1:3",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s2:6",
+        "after": "s0:2",
+        "ch": "λ"
+      },
+      {
+        "op": "del",
+        "id": "s1:3"
+      },
+      {
+        "op": "ins",
+        "id": "s2:7",
+        "after": "s0:5",
+        "ch": "\n"
+      },
+      {
+        "op": "del",
+        "id": "s0:5"
+      },
+      {
+        "op": "ins",
+        "id": "s1:6",
+        "after": "s2:3",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:7",
+        "after": "s3:1",
+        "ch": " "
+      },
+      {
+        "op": "del",
+        "id": "s2:4"
+      },
+      {
+        "op": "del",
+        "id": "s0:3"
+      },
+      {
+        "op": "ins",
+        "id": "s1:8",
+        "after": "s3:3",
+        "ch": "b"
+      },
+      {
+        "op": "ins",
+        "id": "s1:9",
+        "after": "s1:7",
+        "ch": "a"
+      },
+      {
+        "op": "ins",
+        "id": "s3:4",
+        "after": "s1:7",
+        "ch": "😀"
+      },
+      {
+        "op": "ins",
+        "id": "s0:11",
+        "after": "s0:3",
+        "ch": "λ"
+      }
+    ],
+    "expected": " ab\naa中λ中λ中\n中😀中\nbbλaa a😀"
+  }
+]

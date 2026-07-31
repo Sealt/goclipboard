@@ -106,8 +106,10 @@ func topoOrder(rng *rand.Rand, sc *convergeScenario) []Op {
 	}
 	// Replay semantics: duplicate ops re-delivered after the whole batch.
 	base := len(order)
-	for d := 0; d < rng.Intn(3); d++ {
-		order = append(order, order[rng.Intn(base)])
+	if base > 0 {
+		for d := 0; d < rng.Intn(3); d++ {
+			order = append(order, order[rng.Intn(base)])
+		}
 	}
 	return order
 }
@@ -116,8 +118,11 @@ func sameItems(a, b []Item) bool {
 	if len(a) != len(b) {
 		return false
 	}
+	// Full structural equality: ID, parent (After), value and tombstone.
+	// Materialized-text equality alone would let a broken parent pointer
+	// slip through, and parent pointers are what future ops anchor on.
 	for i := range a {
-		if a[i].ID != b[i].ID || a[i].Deleted != b[i].Deleted || a[i].Value != b[i].Value {
+		if a[i] != b[i] {
 			return false
 		}
 	}

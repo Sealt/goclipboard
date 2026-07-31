@@ -105,6 +105,56 @@ func TestSanitizeFileNameInvalidUTF8(t *testing.T) {
 	}
 }
 
+func TestSanitizeFileNameBoundaries(t *testing.T) {
+	// 4-byte runes: 50 emoji = exactly 200 bytes → kept whole.
+	fifty := strings.Repeat("😀", 50)
+	got, err := SanitizeFileName(fifty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != fifty || !utf8.ValidString(got) {
+		t.Fatalf("50 emoji (200 bytes) should be kept whole, got %d bytes", len(got))
+	}
+
+	// 51 emoji = 204 bytes → trimmed to 50 runes / exactly 200 bytes.
+	got, err = SanitizeFileName(strings.Repeat("😀", 51))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 200 || len([]rune(got)) != 50 || !utf8.ValidString(got) {
+		t.Fatalf("51 emoji: got %d bytes / %d runes, want 200 / 50", len(got), len([]rune(got)))
+	}
+
+	// 67 CJK = 201 bytes (one over) → 66 runes / 198 bytes.
+	got, err = SanitizeFileName(strings.Repeat("汉", 67))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 198 || len([]rune(got)) != 66 {
+		t.Fatalf("67 CJK: got %d bytes / %d runes, want 198 / 66", len(got), len([]rune(got)))
+	}
+
+	// Mixed widths at exactly 200 bytes → kept whole (60 CJK + 20 ASCII).
+	mixed := strings.Repeat("汉", 60) + strings.Repeat("x", 20)
+	got, err = SanitizeFileName(mixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != mixed {
+		t.Fatalf("mixed 200-byte name should be kept whole, got %d bytes", len(got))
+	}
+
+	// Mixed widths over the cap (67 CJK + 5 ASCII = 206 bytes): trailing
+	// ASCII goes first, then one CJK → 66 CJK / 198 bytes.
+	got, err = SanitizeFileName(strings.Repeat("汉", 67) + "xxxxx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != strings.Repeat("汉", 66) {
+		t.Fatalf("mixed over cap: got %q (%d bytes), want 66 CJK", got, len(got))
+	}
+}
+
 func TestFileInfoFrom(t *testing.T) {
 	expires := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	info := FileInfoFrom(File{

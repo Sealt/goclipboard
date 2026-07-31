@@ -1,4 +1,4 @@
-.PHONY: run build test test-js test-cover clean
+.PHONY: run build test test-go test-js test-cover clean
 
 run:
 	go run .
@@ -6,7 +6,10 @@ run:
 build:
 	go build -trimpath -ldflags="-s -w" -o goclipboard .
 
-test:
+# Runs both the Go suite and the browser-CRDT cross-check (needs node).
+test: test-go test-js
+
+test-go:
 	go test ./...
 
 test-js:
