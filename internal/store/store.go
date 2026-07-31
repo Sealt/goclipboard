@@ -106,6 +106,22 @@ func (s *Store) Get(key string) (model.Clipboard, bool) {
 	return cloneClipboard(item), true
 }
 
+// Peek returns the live room without cloning its document. The caller must
+// treat the result as read-only: stored documents are never mutated in
+// place (updates replace the room wholesale), so sharing the reference is
+// safe while other goroutines write. Use for hot read paths (WS state
+// polling every few seconds per connection) where the defensive deep copy
+// of Get would be pure waste.
+func (s *Store) Peek(key string) (model.Clipboard, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.getLiveLocked(key, s.now())
+	if !ok {
+		return model.Clipboard{}, false
+	}
+	return item, true
+}
+
 // Save is a full document replace (LWW at document level).
 // Identical content+TTL refreshes expiry without bumping version.
 // updatedBy is used as the CRDT site when rebuilding the document.
@@ -207,19 +223,21 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 	now := s.now()
 	current, exists := s.getLiveLocked(key, now)
 
-	var doc *crdt.Doc
+	var working *crdt.Doc
 	var version int64
 	var generation int64
 	var curTTL time.Duration
 	ttlChanged := false
 
 	if exists {
-		doc = current.Doc.Clone()
+		// Work on a single clone of the stored document so failures never
+		// corrupt the committed state (and we clone only once per batch).
+		working = current.Doc.Clone()
 		version = current.Version
 		generation = s.existingGenerationLocked(current.Generation)
 		curTTL = current.TTL
 	} else {
-		doc = crdt.NewDoc()
+		working = crdt.NewDoc()
 		version = 0
 		if ttl <= 0 {
 			return model.Clipboard{}, false, fmt.Errorf("ttlSeconds required for new clipboard")
@@ -232,8 +250,6 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		ttlChanged = true
 	}
 
-	// Apply on a working copy so failures do not corrupt stored state.
-	working := doc.Clone()
 	changed := false
 	if len(ops) > 0 {
 		var err error

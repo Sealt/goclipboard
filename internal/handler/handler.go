@@ -511,7 +511,7 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 		case "sync":
 			// Client detected a version gap (dropped/coalesced updates) and
 			// wants an authoritative snapshot.
-			cur, exists := h.store.Get(key)
+			cur, exists := h.store.Peek(key)
 			select {
 			case send <- h.stateMessage(key, cur, exists):
 			default:
@@ -546,7 +546,7 @@ func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbou
 		// Error ack first so the sender drops the bad batch, then a snapshot
 		// so its document converges back to server state.
 		h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: err.Error()})
-		cur, exists := h.store.Get(key)
+		cur, exists := h.store.Peek(key)
 		select {
 		case send <- h.stateMessage(key, cur, exists):
 		default:
@@ -629,7 +629,10 @@ func (h *Handler) takeEvent(key string, version, generation int64) (contentEvent
 }
 
 func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVersion, lastGeneration int64, lastExists bool, lastFilesRev int64, forceContent bool) (int64, int64, bool, int64) {
-	item, exists := h.store.Get(key)
+	// Peek (no deep clone): this runs per connection every presence tick
+	// (~5s) even when nothing changed; cloning the whole document each time
+	// would be pure waste on large rooms.
+	item, exists := h.store.Peek(key)
 	version := model.VersionNotExists
 	generation := item.Generation
 	if exists {
