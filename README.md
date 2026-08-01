@@ -14,6 +14,7 @@
 ![Docker](https://img.shields.io/badge/Docker-scratch%20镜像-2496ed?logo=docker&logoColor=white)
 ![CRDT](https://img.shields.io/badge/同步-RGA%20CRDT-7c3aed)
 ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+[![LinuxDo](https://img.shields.io/badge/LinuxDo-%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5-fd4d2b)](https://linux.do)
 
 </div>
 

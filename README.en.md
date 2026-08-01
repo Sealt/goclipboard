@@ -14,6 +14,7 @@ Share text and files through a random URL. It edits itself while you watch — t
 ![Docker](https://img.shields.io/badge/Docker-scratch%20image-2496ed?logo=docker&logoColor=white)
 ![CRDT](https://img.shields.io/badge/sync-RGA%20CRDT-7c3aed)
 ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+[![LinuxDo](https://img.shields.io/badge/LinuxDo-Friend%20Link-fd4d2b)](https://linux.do)
 
 </div>
 
