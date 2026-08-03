@@ -89,6 +89,47 @@ func TestFileStoreNoSizeLimits(t *testing.T) {
 	}
 }
 
+func TestStartupSweepRemovesOrphans(t *testing.T) {
+	dir := t.TempDir()
+	room := filepath.Join(dir, "sweeproom")
+	if err := os.MkdirAll(room, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	meta := func(id string) string {
+		return `{"id":"` + id + `","name":"f.txt","contentType":"text/plain","size":4,` +
+			`"ttlSeconds":3600,"expiresAt":"` + now.Add(time.Hour).UTC().Format(time.RFC3339) +
+			`","uploadedAt":"` + now.UTC().Format(time.RFC3339) + `"}`
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(room, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Valid pair: survives the sweep.
+	write("aaaaaaaa.meta.json", meta("aaaaaaaa"))
+	write("aaaaaaaa.bin", "data")
+	// Orphans left by a crash between the bin/meta rename pair in PutReader.
+	write("bbbbbbbb.bin", "orphan")               // blob without meta
+	write("cccccccc.bin.tmp", "partial")          // temp file
+	write("dddddddd.meta.json", meta("dddddddd")) // meta without blob
+	write("eeeeeeee.meta.json.tmp", `{"broken`)   // interrupted meta write
+
+	s := NewFileStore(WithFileRoot(dir))
+
+	if _, ok := s.Get("sweeproom", "aaaaaaaa"); !ok {
+		t.Fatal("valid file should survive the sweep")
+	}
+	for _, gone := range []string{
+		"bbbbbbbb.bin", "cccccccc.bin.tmp", "dddddddd.meta.json", "eeeeeeee.meta.json.tmp",
+	} {
+		if _, err := os.Stat(filepath.Join(room, gone)); !os.IsNotExist(err) {
+			t.Fatalf("%s should have been removed, err=%v", gone, err)
+		}
+	}
+}
+
 func TestSanitizePathInName(t *testing.T) {
 	fs := tempFileStore(t)
 	f, err := fs.Put("r", "../../etc/passwd", "text/plain", []byte("x"), time.Hour, "fp")

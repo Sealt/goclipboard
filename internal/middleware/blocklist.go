@@ -9,18 +9,28 @@ import (
 )
 
 type BlocklistConfig struct {
+	// Hard tier: scanner-style probes (414 overlong URIs) — low threshold,
+	// long ban.
 	HardThreshold int
+	// Scan tier: distinct suspicious paths — moderate threshold.
 	ScanThreshold int
-	Window        time.Duration
-	BanSeconds    int
+	// Soft tier: application-level client errors (400/405/413) that legit
+	// clients can trip (bad JSON, password typos, stale frontends) — high
+	// threshold, short ban, so a buggy client does not lock out a whole NAT.
+	SoftThreshold  int
+	SoftBanSeconds int
+	Window         time.Duration
+	BanSeconds     int
 }
 
 func DefaultBlocklistConfig() BlocklistConfig {
 	return BlocklistConfig{
-		HardThreshold: 5,
-		ScanThreshold: 10,
-		Window:        30 * time.Second,
-		BanSeconds:    1800,
+		HardThreshold:  5,
+		ScanThreshold:  10,
+		SoftThreshold:  30,
+		SoftBanSeconds: 300, // 5 minutes
+		Window:         30 * time.Second,
+		BanSeconds:     1800, // 30 minutes
 	}
 }
 
@@ -34,12 +44,22 @@ type blocklist struct {
 
 type ipState struct {
 	hardCount  int
+	softCount  int
 	scanCount  int
 	scanPaths  map[string]struct{}
 	windowTime time.Time
 }
 
 func Blocklist(logger *slog.Logger, cfg BlocklistConfig, resolver *IPResolver) func(http.Handler) http.Handler {
+	// Zero-valued tiers fall back to the defaults so partial configs (e.g.
+	// tests) never disable the soft tier accidentally.
+	d := DefaultBlocklistConfig()
+	if cfg.SoftThreshold <= 0 {
+		cfg.SoftThreshold = d.SoftThreshold
+	}
+	if cfg.SoftBanSeconds <= 0 {
+		cfg.SoftBanSeconds = d.SoftBanSeconds
+	}
 	bl := &blocklist{
 		bans:  make(map[string]time.Time),
 		state: make(map[string]*ipState),
@@ -94,6 +114,8 @@ func (bl *blocklist) record(ip string, now time.Time, path string, status int) {
 		bl.recordHard(ip, now, path)
 	case "scan":
 		bl.recordScan(ip, now, path)
+	case "soft":
+		bl.recordSoft(ip, now, path)
 	}
 }
 
@@ -105,7 +127,19 @@ func (bl *blocklist) recordHard(ip string, now time.Time, path string) {
 	st.hardCount++
 
 	if st.hardCount >= bl.cfg.HardThreshold {
-		bl.ban(ip, now, "hard", st.hardCount, path)
+		bl.ban(ip, now, "hard", st.hardCount, path, bl.cfg.BanSeconds)
+	}
+}
+
+func (bl *blocklist) recordSoft(ip string, now time.Time, path string) {
+	bl.mu.Lock()
+	defer bl.mu.Unlock()
+
+	st := bl.getOrResetState(ip, now)
+	st.softCount++
+
+	if st.softCount >= bl.cfg.SoftThreshold {
+		bl.ban(ip, now, "soft", st.softCount, path, bl.cfg.SoftBanSeconds)
 	}
 }
 
@@ -124,7 +158,7 @@ func (bl *blocklist) recordScan(ip string, now time.Time, path string) {
 			reason = "scan_burst"
 			count = st.scanCount
 		}
-		bl.ban(ip, now, reason, count, path)
+		bl.ban(ip, now, reason, count, path, bl.cfg.BanSeconds)
 	}
 }
 
@@ -140,17 +174,17 @@ func (bl *blocklist) getOrResetState(ip string, now time.Time) *ipState {
 	return st
 }
 
-func (bl *blocklist) ban(ip string, now time.Time, reason string, count int, lastPath string) {
-	bl.bans[ip] = now.Add(time.Duration(bl.cfg.BanSeconds) * time.Second)
+func (bl *blocklist) ban(ip string, now time.Time, reason string, count int, lastPath string, banSeconds int) {
+	bl.bans[ip] = now.Add(time.Duration(banSeconds) * time.Second)
 	delete(bl.state, ip)
 
 	bl.log.Warn("IP banned",
 		"reason", reason,
 		"ip", ip,
 		"count", count,
-		"threshold", map[string]int{"hard": bl.cfg.HardThreshold, "scan": bl.cfg.ScanThreshold}[reason],
+		"threshold", map[string]int{"hard": bl.cfg.HardThreshold, "scan": bl.cfg.ScanThreshold, "soft": bl.cfg.SoftThreshold}[reason],
 		"window", bl.cfg.Window.String(),
-		"ban_seconds", bl.cfg.BanSeconds,
+		"ban_seconds", banSeconds,
 		"last_path", lastPath,
 	)
 }
@@ -181,13 +215,48 @@ func (bl *blocklist) runCleanup() {
 }
 
 func classify(status int, path string) string {
-	if status == 400 || status == 405 || status == 413 || status == 414 {
+	switch {
+	case status == http.StatusRequestURITooLong:
+		// Overlong URIs are scanner behavior; application clients never
+		// produce them — hard tier.
 		return "hard"
-	}
-	if status == 404 && isSuspiciousPath(path) {
+	case status == http.StatusBadRequest || status == http.StatusMethodNotAllowed || status == http.StatusRequestEntityTooLarge:
+		// Application-level client errors — soft tier (high threshold,
+		// short ban).
+		return "soft"
+	case status == http.StatusNotFound && isSuspiciousPath(path):
+		return "scan"
+	case isProbePath(path):
+		// Single-segment scanner targets (wp-admin, phpmyadmin, ...) match
+		// the room key pattern and get a 200 page by design; count them as
+		// scan signals so probing stays visible to the blocklist.
 		return "scan"
 	}
 	return "none"
+}
+
+// probePaths are common scanner targets that are also valid room keys
+// (single alnum segment), so the app answers them with a 200 page instead
+// of a 404. Browser-requested resources (favicon.ico, robots.txt) and
+// dotfiles (.env, already suspicious) are deliberately excluded so normal
+// traffic never trips the scan counter.
+var probePaths = map[string]bool{
+	"admin": true, "administrator": true,
+	"wp-admin": true, "wp-login": true,
+	"login": true, "signin": true, "signup": true, "register": true,
+	"phpmyadmin": true, "pma": true, "mysql": true, "phpinfo": true,
+	"server-status": true, "server-info": true, "cgi-bin": true,
+	"config": true, "configuration": true, "shell": true, "cmd": true,
+	"backup": true, "dump": true, "db": true, "database": true, "sql": true,
+	"debug": true, "git": true,
+}
+
+func isProbePath(path string) bool {
+	key := strings.TrimPrefix(path, "/")
+	if key == "" || strings.Contains(key, "/") {
+		return false
+	}
+	return probePaths[strings.ToLower(key)]
 }
 
 func isSuspiciousPath(path string) bool {

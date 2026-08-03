@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,10 +17,12 @@ func testLogger() *slog.Logger {
 
 func cfg(hard, scan int) BlocklistConfig {
 	return BlocklistConfig{
-		HardThreshold: hard,
-		ScanThreshold: scan,
-		Window:        10 * time.Second,
-		BanSeconds:    60,
+		HardThreshold:  hard,
+		ScanThreshold:  scan,
+		SoftThreshold:  3,
+		SoftBanSeconds: 60,
+		Window:         10 * time.Second,
+		BanSeconds:     60,
 	}
 }
 
@@ -80,8 +83,10 @@ func TestRepeatedSameScanPath(t *testing.T) {
 	}
 }
 
-func TestHardViolationBans(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(3, 10), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestSoftViolationBans(t *testing.T) {
+	// 400-class errors are soft violations: they ban after the (test-lowered)
+	// soft threshold instead of the hard one.
+	handler := Blocklist(testLogger(), cfg(10, 10), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 
@@ -93,6 +98,29 @@ func TestHardViolationBans(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	req.RemoteAddr = ip
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("ban status = %d, want %d", res.Code, http.StatusForbidden)
+	}
+}
+
+func TestHardViolationBans(t *testing.T) {
+	// 414 (overlong URI) is scanner behavior — hard tier, low threshold.
+	handler := Blocklist(testLogger(), cfg(2, 10), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestURITooLong)
+	}))
+
+	ip := "10.0.0.17:8888"
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/"+strings.Repeat("a", 100), nil)
+		req.RemoteAddr = ip
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/"+strings.Repeat("b", 100), nil)
 	req.RemoteAddr = ip
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -163,10 +191,12 @@ func TestMixedAttacks(t *testing.T) {
 
 func TestWindowReset(t *testing.T) {
 	cfg := BlocklistConfig{
-		HardThreshold: 5,
-		ScanThreshold: 5,
-		Window:        50 * time.Millisecond,
-		BanSeconds:    60,
+		HardThreshold:  5,
+		ScanThreshold:  5,
+		SoftThreshold:  5,
+		SoftBanSeconds: 60,
+		Window:         50 * time.Millisecond,
+		BanSeconds:     60,
 	}
 
 	handler := Blocklist(testLogger(), cfg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -194,10 +224,12 @@ func TestWindowReset(t *testing.T) {
 
 func TestBanExpires(t *testing.T) {
 	cfg := BlocklistConfig{
-		HardThreshold: 2,
-		ScanThreshold: 10,
-		Window:        10 * time.Second,
-		BanSeconds:    1,
+		HardThreshold:  2,
+		ScanThreshold:  10,
+		SoftThreshold:  2,
+		SoftBanSeconds: 1,
+		Window:         10 * time.Second,
+		BanSeconds:     60,
 	}
 
 	var mu sync.Mutex
@@ -246,18 +278,19 @@ func TestBanExpires(t *testing.T) {
 }
 
 func TestSeparateIPs(t *testing.T) {
+	// 414 is a hard violation; two hits must ban only the offending IP.
 	handler := Blocklist(testLogger(), cfg(2, 5), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusRequestURITooLong)
 	}))
 
 	badIP := "10.0.0.15:1111"
 	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/"+strings.Repeat("a", 100), nil)
 		req.RemoteAddr = badIP
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/"+strings.Repeat("b", 100), nil)
 	req.RemoteAddr = badIP
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -266,26 +299,78 @@ func TestSeparateIPs(t *testing.T) {
 	}
 
 	goodIP := "10.0.0.16:2222"
-	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/"+strings.Repeat("c", 100), nil)
 	req2.RemoteAddr = goodIP
 	res2 := httptest.NewRecorder()
 	handler.ServeHTTP(res2, req2)
-	if res2.Code != http.StatusBadRequest {
+	if res2.Code != http.StatusRequestURITooLong {
 		t.Fatal("different IP should not be affected")
 	}
 }
 
 func TestClassifyHard(t *testing.T) {
-	hardStatuses := []int{
+	if classify(http.StatusRequestURITooLong, "/any") != "hard" {
+		t.Errorf("414 should be a hard violation")
+	}
+}
+
+func TestClassifySoft(t *testing.T) {
+	softStatuses := []int{
 		http.StatusBadRequest,
 		http.StatusMethodNotAllowed,
 		http.StatusRequestEntityTooLarge,
-		http.StatusRequestURITooLong,
 	}
-	for _, s := range hardStatuses {
-		if classify(s, "/any") != "hard" {
-			t.Errorf("status %d should be hard violation", s)
+	for _, s := range softStatuses {
+		if classify(s, "/any") != "soft" {
+			t.Errorf("status %d should be a soft violation", s)
 		}
+	}
+}
+
+func TestClassifyProbe(t *testing.T) {
+	probePaths := []string{"/wp-admin", "/admin", "/phpmyadmin", "/login"}
+	for _, p := range probePaths {
+		if classify(http.StatusOK, p) != "scan" {
+			t.Errorf("probe path %q with 200 should be a scan violation", p)
+		}
+		if classify(http.StatusNotFound, p) != "scan" {
+			t.Errorf("probe path %q with 404 should be a scan violation", p)
+		}
+	}
+	// Browser-requested resources and normal room keys must never count.
+	normal := []string{"/favicon.ico", "/robots.txt", "/room-1", "/a1b2c3d4", "/static/app.js", "/"}
+	for _, p := range normal {
+		if classify(http.StatusOK, p) != "none" {
+			t.Errorf("normal path %q with 200 should NOT be a violation", p)
+		}
+	}
+}
+
+func TestProbeDiversityBans(t *testing.T) {
+	// Probing wp-admin etc. returns 200 by design (valid room key); the
+	// blocklist must still catch the scanner via the scan tier.
+	handler := Blocklist(testLogger(), cfg(10, 3), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ip := "10.0.0.18:9999"
+	paths := []string{"/wp-admin", "/wp-login", "/phpmyadmin", "/login"}
+	for i, p := range paths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		req.RemoteAddr = ip
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if i < len(paths)-1 && res.Code == http.StatusForbidden {
+			t.Fatalf("path %s: banned too early", p)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = ip
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("after 4 distinct probe paths, status = %d, want %d", res.Code, http.StatusForbidden)
 	}
 }
 

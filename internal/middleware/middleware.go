@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -147,6 +148,25 @@ func (rw *responseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// ReadFrom forwards to the underlying writer so io.Copy (e.g. file
+// downloads) can use the sendfile/zero-copy path instead of the generic
+// buffer loop.
+func (rw *responseWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	if rw.status == 0 {
+		rw.status = http.StatusOK
+	}
+	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(writerOnly{rw.ResponseWriter}, r)
+}
+
+// writerOnly hides ReaderFrom/WriterTo from io.Copy so the fallback never
+// re-enters responseWriter.ReadFrom.
+type writerOnly struct {
+	io.Writer
 }
 
 // Hijack forwards to the underlying writer so WebSocket upgrades work through

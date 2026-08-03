@@ -27,9 +27,9 @@ const DefaultFileDir = "data/files"
 const MaxFilePasswordLen = 256
 
 var (
-	ErrFileNotFound   = errors.New("file not found")
-	ErrUploadDisabled = errors.New("file upload is disabled")
-	ErrFileIO         = errors.New("file storage error")
+	ErrFileNotFound    = errors.New("file not found")
+	ErrUploadDisabled  = errors.New("file upload is disabled")
+	ErrFileIO          = errors.New("file storage error")
 	ErrBadFilePassword = errors.New("invalid file password")
 )
 
@@ -548,6 +548,35 @@ func (s *FileStore) tryRemoveRoomDirLocked(roomKey string) {
 	_ = os.Remove(s.roomDir(roomKey))
 }
 
+// sweepRoomDir removes leftovers from an interrupted upload: temp files
+// (*.tmp) and blobs/metadata without their counterpart. Only files whose
+// pair is missing are touched, so live uploads and valid rooms are safe.
+func (s *FileStore) sweepRoomDir(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, ent := range entries {
+		if ent.IsDir() {
+			continue
+		}
+		name := ent.Name()
+		full := filepath.Join(dir, name)
+		switch {
+		case strings.HasSuffix(name, ".tmp"):
+			_ = os.Remove(full)
+		case strings.HasSuffix(name, ".bin"):
+			if _, err := os.Stat(filepath.Join(dir, strings.TrimSuffix(name, ".bin")+".meta.json")); err != nil {
+				_ = os.Remove(full)
+			}
+		case strings.HasSuffix(name, ".meta.json"):
+			if _, err := os.Stat(filepath.Join(dir, strings.TrimSuffix(name, ".meta.json")+".bin")); err != nil {
+				_ = os.Remove(full)
+			}
+		}
+	}
+}
+
 func (s *FileStore) settingsPath(roomKey string) string {
 	return filepath.Join(s.roomDir(roomKey), "settings.json")
 }
@@ -631,6 +660,10 @@ func (s *FileStore) loadAllFromDisk() error {
 
 func (s *FileStore) loadRoomFromDisk(roomKey string, now time.Time) {
 	dir := s.roomDir(roomKey)
+	// A crash between the bin/meta rename pair in PutReader leaves orphan
+	// blobs and temp files that are unrecoverable; sweep them at startup so
+	// restarts never leak disk.
+	s.sweepRoomDir(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return

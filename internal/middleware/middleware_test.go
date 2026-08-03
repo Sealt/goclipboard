@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +55,34 @@ func TestResponseWriterFlushDelegation(t *testing.T) {
 	rw.Flush()
 	if !inner.Flushed {
 		t.Fatal("inner writer should be flushed")
+	}
+}
+
+func TestResponseWriterReadFrom(t *testing.T) {
+	inner := httptest.NewRecorder()
+	rw := &responseWriter{ResponseWriter: inner}
+
+	if _, ok := interface{}(rw).(io.ReaderFrom); !ok {
+		t.Fatal("responseWriter should implement io.ReaderFrom")
+	}
+
+	n, err := rw.ReadFrom(strings.NewReader("hello world"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 11 || inner.Body.String() != "hello world" {
+		t.Fatalf("ReadFrom n=%d body=%q", n, inner.Body.String())
+	}
+	if rw.status != http.StatusOK {
+		t.Fatalf("status should default to 200, got %d", rw.status)
+	}
+
+	// Status defaulting must not clobber an explicit WriteHeader.
+	rw2 := &responseWriter{ResponseWriter: httptest.NewRecorder()}
+	rw2.WriteHeader(http.StatusCreated)
+	_, _ = rw2.ReadFrom(strings.NewReader("x"))
+	if rw2.status != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rw2.status, http.StatusCreated)
 	}
 }
 
