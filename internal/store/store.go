@@ -1,6 +1,9 @@
 package store
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -25,11 +28,22 @@ const (
 )
 
 var (
-	ErrContentTooLarge = errors.New("content exceeds 1 MiB limit")
-	ErrTooManyRooms    = errors.New("server at capacity: too many clipboards")
-	ErrMemoryLimit     = errors.New("server at capacity: memory limit")
-	ErrVersionConflict = errors.New("version conflict")
+	ErrContentTooLarge  = errors.New("content exceeds 1 MiB limit")
+	ErrTooManyRooms     = errors.New("server at capacity: too many clipboards")
+	ErrMemoryLimit      = errors.New("server at capacity: memory limit")
+	ErrVersionConflict  = errors.New("version conflict")
+	ErrRoomNotFound     = errors.New("clipboard not found")
+	ErrPasswordMismatch = errors.New("edit password mismatch")
 )
+
+// newViewKey returns a random read-only access key for a room.
+func newViewKey() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return hex.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+	}
+	return hex.EncodeToString(b[:])
+}
 
 type Store struct {
 	mu             sync.Mutex
@@ -41,6 +55,14 @@ type Store struct {
 	maxTotal       int64
 	now            func() time.Time
 	onExpire       func(key string)
+
+	// Optional disk persistence (see persist.go).
+	persistDir     string
+	dirty          map[string]bool
+	deleted        map[string]bool
+	persistStop    chan struct{}
+	persistDone    chan struct{}
+	persistRunning bool
 }
 
 type Option func(*Store)
@@ -78,6 +100,7 @@ func New(opts ...Option) *Store {
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.startPersister()
 	return s
 }
 
@@ -195,15 +218,23 @@ func (s *Store) SaveWithBase(key, content string, ttl time.Duration, updatedBy s
 		version = current.Version + 1
 	}
 
+	viewKey := current.ViewKey
+	if !exists || viewKey == "" {
+		viewKey = newViewKey()
+	}
+
 	item := model.Clipboard{
-		Doc:        doc,
-		Content:    content,
-		TTL:        ttl,
-		ExpiresAt:  now.Add(ttl),
-		Version:    version,
-		Generation: generation,
-		UpdatedAt:  now,
-		UpdatedBy:  updatedBy,
+		Doc:           doc,
+		Content:       content,
+		TTL:           ttl,
+		ExpiresAt:     now.Add(ttl),
+		Version:       version,
+		Generation:    generation,
+		ViewKey:       viewKey,
+		Password:      current.Password,
+		PasswordScope: current.PasswordScope,
+		UpdatedAt:     now,
+		UpdatedBy:     updatedBy,
 	}
 	s.putLocked(key, item, newBytes)
 	return cloneClipboard(item), nil
@@ -285,6 +316,7 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 				ExpiresAt:  now.Add(curTTL),
 				Version:    1,
 				Generation: generation,
+				ViewKey:    newViewKey(),
 				UpdatedAt:  now,
 				UpdatedBy:  updatedBy,
 			}
@@ -310,15 +342,23 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		return model.Clipboard{}, false, err
 	}
 
+	viewKey := current.ViewKey
+	if !exists || viewKey == "" {
+		viewKey = newViewKey()
+	}
+
 	item := model.Clipboard{
-		Doc:        working,
-		Content:    content,
-		TTL:        curTTL,
-		ExpiresAt:  now.Add(curTTL),
-		Version:    version + 1,
-		Generation: generation,
-		UpdatedAt:  now,
-		UpdatedBy:  updatedBy,
+		Doc:           working,
+		Content:       content,
+		TTL:           curTTL,
+		ExpiresAt:     now.Add(curTTL),
+		Version:       version + 1,
+		Generation:    generation,
+		ViewKey:       viewKey,
+		Password:      current.Password,
+		PasswordScope: current.PasswordScope,
+		UpdatedAt:     now,
+		UpdatedBy:     updatedBy,
 	}
 	s.putLocked(key, item, newBytes)
 	return cloneClipboard(item), true, nil
@@ -389,6 +429,77 @@ func (s *Store) Delete(key string) {
 	s.removeLocked(key)
 }
 
+// HasPassword reports whether the room is protected (writes require the
+// password; with scope "view", reads do too). A missing/expired room counts
+// as unprotected.
+func (s *Store) HasPassword(key string) bool {
+	item, ok := s.Peek(key)
+	return ok && item.Password != ""
+}
+
+// PasswordInfo reports whether the room is password-protected and what the
+// password gates ("edit" | "view"). Missing/expired rooms count as
+// unprotected; a protected room with an empty scope is normalized to "edit"
+// (legacy rooms locked before scope support).
+func (s *Store) PasswordInfo(key string) (set bool, scope string) {
+	item, ok := s.Peek(key)
+	if !ok || item.Password == "" {
+		return false, ""
+	}
+	return true, model.PasswordScopeOf(item.PasswordScope)
+}
+
+// PasswordOK compares a presented password against the room's password in
+// constant time. Unprotected or missing rooms accept any password.
+func (s *Store) PasswordOK(key, password string) bool {
+	item, ok := s.Peek(key)
+	if !ok || item.Password == "" {
+		return true
+	}
+	if len(password) != len(item.Password) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(password), []byte(item.Password)) == 1
+}
+
+// SetPassword locks, rotates or unlocks a room. When the room is already
+// locked, current must match (ErrPasswordMismatch otherwise). An empty next
+// value unlocks the room. scope decides what the password gates ("edit" or
+// "view"); it is ignored when unlocking, kept on rotation when empty, and
+// defaults to "edit" for a freshly locked room.
+func (s *Store) SetPassword(key, current, next, scope string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.getLiveLocked(key, s.now())
+	if !ok {
+		return ErrRoomNotFound
+	}
+	if item.Password != "" {
+		if len(current) != len(item.Password) ||
+			subtle.ConstantTimeCompare([]byte(current), []byte(item.Password)) != 1 {
+			return ErrPasswordMismatch
+		}
+	}
+	if item.Password == next && item.PasswordScope == scope {
+		return nil
+	}
+	item.Password = next
+	if next == "" {
+		item.PasswordScope = ""
+	} else {
+		if scope == "" {
+			scope = item.PasswordScope
+		}
+		if scope == "" {
+			scope = model.PasswordScopeEdit
+		}
+		item.PasswordScope = scope
+	}
+	s.items[key] = item
+	s.markDirtyLocked(key)
+	return nil
+}
+
 func (s *Store) CleanupExpired() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -439,6 +550,7 @@ func (s *Store) putLocked(key string, item model.Clipboard, newBytes int64) {
 	s.items[key] = item
 	s.sizeBy[key] = newBytes
 	s.total += newBytes
+	s.markDirtyLocked(key)
 }
 
 func (s *Store) removeLocked(key string) {
@@ -447,6 +559,7 @@ func (s *Store) removeLocked(key string) {
 		delete(s.sizeBy, key)
 	}
 	delete(s.items, key)
+	s.markDeletedLocked(key)
 	if s.total < 0 {
 		s.total = 0
 	}

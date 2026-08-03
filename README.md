@@ -32,8 +32,17 @@ GoClipboard 给你一个 **URL**：把内容贴进房间，分享链接，所有
 - 🔗 **URL 即分享** —— 每个剪贴板随机生成 key，TTL 按分钟/小时/天设定，到期自动清理
 - 👥 **实时协作编辑** —— 基于字符级 **RGA CRDT**，通过 WebSocket 同步：多人并发编辑自动合并，互不覆盖，弱网也不怕
 - 🖱️ **远程光标与选区** —— 实时看到协作者的输入位置，每人一个专属颜色
+- 🔒 **只读模式** —— 链接手动加 `?view=true` 即为只读（服务端强制拒绝一切写入 op），适合需要"只读分享"的场景；分享面板默认只给房间链接，访问控制交给房间密码
+- 🔑 **房间密码** —— 手动输入或自动生成；选择验证范围：**仅编辑需密码**（查看公开），或**查看和编辑都需密码**（未解锁看不到任何内容）
+- ↩️ **撤销 / 重做** —— 基于 CRDT 逆操作的协作式撤销（Ctrl+Z / Ctrl+Shift+Z），不受他人并发编辑干扰
+- 🕘 **版本历史** —— 自动存档编辑快照，一键恢复到任意历史版本（以 CRDT 增量合并，绝不覆盖他人内容）
+- 📝 **Markdown 预览** —— 所见即所得渲染 + 代码高亮（纯前端、输出经过消毒，不怕恶意粘贴）
+- 🔗 **二维码分享** —— 弹窗内一键生成房间二维码（默认编码房间链接，可加 `mode` 参数），手机扫码即开
 - 📁 **房间文件分享** —— 拖入文件即得链接；落盘存储，每个文件独立下载密码，上传/删除需管理员密码
 - 🔐 **密码只存哈希** —— 文件密码仅保存 salt + SHA-256
+- 💾 **可选持久化** —— 设置 `PERSIST_DIR` 后房间以 CRDT 快照落盘，重启不丢（默认仍为纯内存、到期即焚）
+- ⌨️ **CLI 客户端** —— 同一个二进制即可 `push` / `pull`：`echo hi | goclipboard push` 直接拿链接
+- 🌙 **暗色主题 + 中英文界面** —— 跟随系统或手动切换，一键换语言
 - 🚦 **防滥用** —— 按 IP 限流 + 自适应黑名单，扫描者自动封禁 30 分钟
 - 🧹 **内存自限** —— 内存预算封顶；写满时返回 `HTTP 507` + `Retry-After`
 - 📊 **可运维** —— 结构化 JSON 日志、`/healthz` 健康检查、优雅停机
@@ -58,6 +67,21 @@ make run
 docker compose up -d          # 用 Docker 自托管
 ```
 
+### 命令行客户端
+
+同一个二进制既是服务端也是客户端（`-url` 或环境变量 `GOCLIPBOARD_URL` 指定服务器，默认 `http://localhost:8080`）：
+
+```sh
+echo "hello" | goclipboard push            # → 打印房间链接
+goclipboard push -ttl 2h notes.txt         # 读文件、2 小时后过期
+goclipboard push -v notes.txt              # 顺带打印只读链接
+goclipboard pull https://host/AbC123       # 拉取内容到 stdout
+goclipboard pull -o out.txt AbC123         # 写入文件
+goclipboard pull -password 'pw' AbC123     # 查看范围密码保护的房间
+```
+
+无 `-key` 时服务器自动生成房间 key（`POST /api/clipboard`）。
+
 ## 🧠 工作原理：CRDT，而不是后写覆盖
 
 文本编辑通常是场"打架"：两个人同时输入，后写的人覆盖先写的人。GoClipboard 用**字符级 CRDT**（insert-after RGA）绕开了这个问题：
@@ -76,9 +100,10 @@ docker compose up -d          # 用 Docker 自托管
 ### 剪贴板（REST）
 
 ```http
-GET    /api/clipboard/{key}              # 读取内容 + 版本
-PUT    /api/clipboard/{key}              # 整篇替换
-DELETE /api/clipboard/{key}              # 删除
+POST   /api/clipboard                  # 创建房间（key 由服务端生成）→ 返回含 key/viewKey
+GET    /api/clipboard/{key}            # 读取内容 + 版本 + viewKey
+PUT    /api/clipboard/{key}            # 整篇替换
+DELETE /api/clipboard/{key}            # 删除
 ```
 
 ```sh
@@ -87,19 +112,40 @@ curl -X PUT localhost:8080/api/clipboard/AbC123 \
   -d '{"content":"hello 世界","ttlSeconds":3600,"clientId":"my-site"}'
 ```
 
+响应中的 `viewKey` 用于构造只读链接 `/{key}?view={viewKey}`：带该参数的页面处于只读模式，WebSocket 会话也只读（服务端拒绝一切写入 op）。
+
 `PUT` 支持可选的 `baseVersion` 乐观并发：过期覆盖会被拒绝并返回 `409`（附当前状态），离线/REST 客户端可以据此合并而不是盲目覆盖。
+
+### 房间密码
+
+分享弹窗里可设置房间密码（**手动输入或一键重新生成**），并选择验证范围：
+
+- **编辑**（默认）—— 查看公开；编辑（内容写入、删除、改密码）需要密码
+- **查看** —— 查看和编辑都需要密码：未解锁的会话收不到任何内容，文件列表与下载同样受保护
+
+密码由设置者保管，服务端绝不回传（响应里只有 `passwordSet` / `passwordScope`），持有链接的人也无法通过删掉参数拿到它。
+
+```http
+GET /api/clipboard/{key}/password          # → {"passwordSet":true,"scope":"view"}
+PUT /api/clipboard/{key}/password          # 设置/修改/解除
+# 修改或解除时 currentPassword 必填（与旧密码一致）；scope: "edit" | "view"
+```
+
+查看「查看范围」保护的房间需携带密码（`X-Goclip-Password` 请求头，或 `?password=` 查询参数），否则 `GET` 返回 `401`；WebSocket 会话先收到不含正文的锁定帧（`passwordRequired: true`），再发送 `{"type":"auth","password":"..."}` 解锁，密码错误会收到 `invalid view password` 错误帧。
 
 ### 实时同步（WebSocket）
 
 ```http
 GET /api/clipboard/{key}/ws?clientId={id}
+# 只读会话：
+GET /api/clipboard/{key}/ws?clientId={id}&view={viewKey}
 ```
 
 **服务端 → 客户端**
 
 | type     | 含义                                              |
 |----------|---------------------------------------------------|
-| `state`  | 完整 CRDT 快照：`items`、线性化 `content`、版本号 |
+| `state`  | 完整 CRDT 快照：`items`、线性化 `content`、版本号、`viewKey` |
 | `ops`    | 已应用的 op 批次 + `version` / `content`          |
 | `cursor` | 远程光标 / 选区（码点偏移）                       |
 | `files`  | 文件列表元数据（上传/删除/过期后推送）            |
@@ -107,8 +153,9 @@ GET /api/clipboard/{key}/ws?clientId={id}
 **客户端 → 服务端**
 
 ```json
-{"type":"ops","ops":[{"op":"ins","id":"a:1","after":"","ch":"x"}],"ttlSeconds":3600}
+{"type":"ops","ops":[{"op":"ins","id":"a:1","after":"","ch":"x"}],"ttlSeconds":3600,"password":"房间密码(已锁定房间)"}
 {"type":"cursor","cursorPos":0,"selectionEnd":0,"color":"#61afef"}
+{"type":"auth","password":"房间密码"}   // 查看范围密码：解锁内容推送
 ```
 
 op 类型：`ins`（`id`、`after`、`ch` —— 恰好一个码点）与 `del`（`id`）。
@@ -150,6 +197,7 @@ Docker 部署时容器健康检查直接调用二进制自身（scratch 镜像�
 | `MAX_MEMORY_MB`         | `256`     | 内容 + CRDT 原子的内存预算，超出返回 `507`                  |
 | `UPLOAD_PASSWORD`       | _(空)_    | 文件上传/删除的管理员密码；留空停用文件功能                  |
 | `FILE_DIR`              | `data/files` | 上传文件的磁盘根目录（`{FILE_DIR}/{room}/{id}.bin`）     |
+| `PERSIST_DIR`           | _(空)_    | 房间持久化目录；设置后房间以 CRDT 快照落盘（每房一文件，~250ms 防抖），重启自动恢复。留空则纯内存、到期即焚 |
 | `TRUSTED_PROXIES`       | _(空)_    | 可信反向代理 CIDR 列表（逗号分隔，如 `127.0.0.1/32,10.0.0.0/8`）。为空时**不信任任何转发头**（`CF-Connecting-IP`/`X-Forwarded-For`/`X-Real-IP` 一律忽略，限流/黑名单按直连 IP 计算），防止伪造头绕过限流或误封他人。Cloudflare 部署请填入其官方 IP 段（https://www.cloudflare.com/ips-v4、ips-v6），并优先使用 `CF-Connecting-IP`（Cloudflare 对 `X-Forwarded-For` 是追加而非覆写，链首可能被客户端伪造） |
 | `MAX_WS_CONNS`          | `512`     | WebSocket 全局并发连接上限，超出返回 `503`                  |
 | `MAX_WS_CONNS_PER_IP`   | `32`      | 单 IP 的 WebSocket 并发连接上限                             |
@@ -166,7 +214,7 @@ Docker 部署时容器健康检查直接调用二进制自身（scratch 镜像�
 docker compose up -d
 ```
 
-多架构（`linux/amd64`、`linux/arm64` 等）`scratch` 镜像——无 shell、无 libc，只有二进制和 CA 证书。自带健康检查，数据持久化在命名卷中。
+多架构（`linux/amd64`、`linux/arm64` 等）`scratch` 镜像——无 shell、无 libc，只有二进制和 CA 证书。自带健康检查；命名卷持久化文件与房间快照（compose.yaml 默认开启 `PERSIST_DIR=/data/rooms`，留空则回退为纯内存）。
 
 ## 🛠️ 开发
 
@@ -181,12 +229,13 @@ make build        # 编译单个静态二进制
 代码量小，结构刻意保持朴素：
 
 ```
-main.go               入口：配置、中间件、优雅停机
+main.go               入口：配置、CLI 分发（push/pull）、中间件、优雅停机
 internal/crdt/        RGA 序列 CRDT（插入 / 删除 / 物化 / 快照）
-internal/store/       内存房间存储 + 磁盘文件存储、TTL 清理
-internal/handler/     HTTP + WebSocket 路由、文件上传下载
+internal/store/       内存房间存储 + 磁盘文件存储、可选持久化、TTL 清理
+internal/handler/     HTTP + WebSocket 路由、文件上传下载、只读会话
 internal/middleware/  限流、黑名单、安全头、请求日志
-static/               前端：app.js + crdt.js（原生 JS，无构建步骤）
+internal/cli/         push/pull 客户端模式（同一二进制）
+static/               前端：app.js + crdt.js（原生 JS，无构建步骤；vendor/ 为 MIT 单文件库）
 ```
 
 ## 📜 License

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"goclipboard/internal/cli"
 	"goclipboard/internal/handler"
 	"goclipboard/internal/middleware"
 	"goclipboard/internal/store"
@@ -28,6 +29,11 @@ func main() {
 	// running server's /healthz endpoint.
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
 		os.Exit(runHealthCheck())
+	}
+
+	// CLI client modes: the same binary can push/pull rooms.
+	if code := cli.Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); code != cli.ExitNotCLI {
+		os.Exit(code)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -76,6 +82,15 @@ func main() {
 		logger.Error("create file dir", "dir", fileDir, "error", err)
 		os.Exit(1)
 	}
+	// Optional room persistence: snapshots under PERSIST_DIR survive restarts.
+	// Empty (default) keeps the store purely in-memory / ephemeral.
+	persistDir := strings.TrimSpace(os.Getenv("PERSIST_DIR"))
+	if persistDir != "" {
+		if err := os.MkdirAll(persistDir, 0o700); err != nil {
+			logger.Error("create persist dir", "dir", persistDir, "error", err)
+			os.Exit(1)
+		}
+	}
 	// Multipart uploads spill to TMPDIR; ensure a writable path (e.g. scratch containers).
 	if tmpDir := os.Getenv("TMPDIR"); tmpDir == "" {
 		tmpDir = filepath.Join(filepath.Dir(fileDir), "tmp")
@@ -89,7 +104,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	sto := store.New(store.WithLimits(maxRooms, maxTotalBytes))
+	var persistOpts []store.Option
+	if persistDir != "" {
+		persistOpts = append(persistOpts, store.WithPersistence(persistDir))
+	}
+	sto := store.New(append(persistOpts, store.WithLimits(maxRooms, maxTotalBytes))...)
 	fileSto := store.NewFileStore(store.WithFileRoot(fileDir))
 	h := handler.New(sto, staticFiles, logger, handler.Options{
 		Files:           fileSto,
@@ -132,6 +151,8 @@ func main() {
 			"max_rooms", maxRooms,
 			"max_memory_mb", maxMemoryMB,
 			"file_dir", fileSto.Root(),
+			"persist_dir", persistDir,
+			"restored_rooms", sto.RestoredRoomCount(),
 			"admin_password_set", uploadPassword != "",
 			"trusted_proxies", strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")),
 			"ws_max_conns", maxWSConns,
@@ -153,6 +174,8 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
+	// Flush pending room snapshots so a restart loses at most the last ~250ms.
+	sto.Close()
 	logger.Info("server stopped")
 }
 

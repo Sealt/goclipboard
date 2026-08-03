@@ -2,6 +2,7 @@ package handler
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -157,22 +158,18 @@ func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.handleHealthz)
 	mux.HandleFunc("/", h.handlePage)
+	mux.HandleFunc("/api/clipboard", h.handleCreateClipboard)
 	mux.HandleFunc("/api/clipboard/", h.handleClipboardAPI)
-	// Static assets: allow long browser cache when URL is versioned (?v=...);
-	// revalidate by default so unversioned requests still pick up deploys.
-	mux.Handle("/static/", staticCacheHeaders(http.FileServer(http.FS(h.static))))
+	// Static assets: no long-lived cache — no-cache forces revalidation on
+	// every load, so deploys show up immediately; ?v= versioning in the HTML
+	// still busts any intermediate cache.
+	mux.Handle("/static/", staticNoCache(http.FileServer(http.FS(h.static))))
 	return mux
 }
 
-func staticCacheHeaders(next http.Handler) http.Handler {
+func staticNoCache(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.RawQuery != "" {
-			// Versioned URL (e.g. app.js?v=20260714b) — safe to cache long.
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		} else {
-			// Unversioned — revalidate so deploys are not stuck on old JS/CSS.
-			w.Header().Set("Cache-Control", "no-cache")
-		}
+		w.Header().Set("Cache-Control", "no-cache")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -208,6 +205,16 @@ func (h *Handler) handlePage(w http.ResponseWriter, r *http.Request) {
 	// HTML must always revalidate — it points at versioned JS/CSS.
 	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFileFS(w, r, h.static, "static/index.html")
+}
+
+// handleCreateClipboard creates a room with a server-generated key (same body
+// as PUT /api/clipboard/{key}; used by the CLI client and simple integrations).
+func (h *Handler) handleCreateClipboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	h.handleSaveClipboard(w, r, randomKey())
 }
 
 func (h *Handler) handleClipboardAPI(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +276,22 @@ func (h *Handler) handleClipboardAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /api/clipboard/{key}/password
+	if strings.HasSuffix(suffix, "/password") {
+		keyPart := strings.TrimSuffix(suffix, "/password")
+		if keyPart == "" || strings.Contains(keyPart, "/") {
+			writeError(w, http.StatusNotFound, "clipboard not found")
+			return
+		}
+		key, err := model.ValidateKey(keyPart)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "clipboard not found")
+			return
+		}
+		h.handleEditPassword(w, r, key)
+		return
+	}
+
 	if strings.Contains(suffix, "/") {
 		writeError(w, http.StatusNotFound, "clipboard not found")
 		return
@@ -282,17 +305,17 @@ func (h *Handler) handleClipboardAPI(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		h.handleGetClipboard(w, key)
+		h.handleGetClipboard(w, r, key)
 	case http.MethodPut:
 		h.handleSaveClipboard(w, r, key)
 	case http.MethodDelete:
-		h.handleDeleteClipboard(w, key)
+		h.handleDeleteClipboard(w, r, key)
 	default:
 		methodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodDelete)
 	}
 }
 
-func (h *Handler) handleGetClipboard(w http.ResponseWriter, key string) {
+func (h *Handler) handleGetClipboard(w http.ResponseWriter, r *http.Request, key string) {
 	item, ok := h.store.Get(key)
 	if !ok {
 		writeJSON(w, http.StatusOK, model.ClipboardResponse{
@@ -304,6 +327,23 @@ func (h *Handler) handleGetClipboard(w http.ResponseWriter, key string) {
 			Exists:     false,
 		})
 		return
+	}
+
+	// View-protected rooms withhold content until the room password is
+	// presented (X-Goclip-Password header or ?password= query).
+	if h.viewProtected(key) {
+		pw := roomPasswordFromRequest(r)
+		if !h.store.PasswordOK(key, pw) {
+			msg := "view password required"
+			if pw != "" {
+				msg = "invalid view password"
+			}
+			writeJSON(w, http.StatusUnauthorized, struct {
+				Error         string `json:"error"`
+				PasswordScope string `json:"passwordScope"`
+			}{msg, model.PasswordScopeView})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, model.ResponseFromClipboard(key, item, true))
@@ -335,6 +375,13 @@ func (h *Handler) handleSaveClipboard(w http.ResponseWriter, r *http.Request, ke
 		return
 	}
 
+	// Locked rooms reject writes without the password — view-link holders
+	// who strip ?view=true get 403 here, not an edit session.
+	if h.store.HasPassword(key) && !h.store.PasswordOK(key, req.Password) {
+		writeError(w, http.StatusForbidden, "edit password required")
+		return
+	}
+
 	// Full document replace (LWW at document level); rebuilds CRDT chain.
 	// baseVersion > 0 makes it conditional so stale offline clients get a
 	// 409 with current state to merge against instead of clobbering peers.
@@ -358,7 +405,12 @@ func (h *Handler) handleSaveClipboard(w http.ResponseWriter, r *http.Request, ke
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) handleDeleteClipboard(w http.ResponseWriter, key string) {
+func (h *Handler) handleDeleteClipboard(w http.ResponseWriter, r *http.Request, key string) {
+	if h.store.HasPassword(key) &&
+		!h.store.PasswordOK(key, strings.TrimSpace(r.Header.Get("X-Goclip-Password"))) {
+		writeError(w, http.StatusForbidden, "edit password required")
+		return
+	}
 	h.store.Delete(key)
 	if h.files != nil {
 		h.files.DeleteRoom(key)
@@ -368,6 +420,102 @@ func (h *Handler) handleDeleteClipboard(w http.ResponseWriter, key string) {
 	h.forgetEvent(key)
 	h.broker.ping(key)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleEditPassword sets, rotates or clears a room password.
+// GET reports whether the room is locked and what the password gates; PUT
+// applies the change. The password itself is never returned, only its
+// presence and scope — link holders cannot learn it from any response.
+func (h *Handler) handleEditPassword(w http.ResponseWriter, r *http.Request, key string) {
+	switch r.Method {
+	case http.MethodGet:
+		if _, ok := h.store.Peek(key); !ok {
+			writeError(w, http.StatusNotFound, "clipboard not found")
+			return
+		}
+		set, scope := h.store.PasswordInfo(key)
+		writeJSON(w, http.StatusOK, struct {
+			PasswordSet bool   `json:"passwordSet"`
+			Scope       string `json:"scope,omitempty"`
+		}{set, scope})
+	case http.MethodPut:
+		defer r.Body.Close()
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		var req model.EditPasswordRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		if err := requireSingleJSONValue(decoder); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		next := strings.TrimSpace(req.Password)
+		if len(next) > 64 {
+			writeError(w, http.StatusBadRequest, "password too long")
+			return
+		}
+		scope := strings.TrimSpace(req.Scope)
+		if next != "" && scope != "" && scope != model.PasswordScopeEdit && scope != model.PasswordScopeView {
+			writeError(w, http.StatusBadRequest, "invalid password scope")
+			return
+		}
+		// Locking a room that does not exist yet (fresh page, nothing typed)
+		// must still work: create an empty room so the password has somewhere
+		// to live. Later edits keep the lock because the password is stored
+		// on the room. An empty unlock request on a missing room is a no-op
+		// success instead (nothing to unlock).
+		if _, ok := h.store.Peek(key); !ok {
+			if next == "" {
+				set, sc := h.store.PasswordInfo(key)
+				writeJSON(w, http.StatusOK, struct {
+					PasswordSet bool   `json:"passwordSet"`
+					Scope       string `json:"scope,omitempty"`
+				}{set, sc})
+				return
+			}
+			if _, err := h.store.SaveWithBase(key, "", defaultTTL, "", 0); err != nil {
+				writeStoreError(w, err)
+				return
+			}
+		}
+		if err := h.store.SetPassword(key, req.CurrentPassword, next, scope); err != nil {
+			if errors.Is(err, store.ErrPasswordMismatch) {
+				writeError(w, http.StatusForbidden, "invalid edit password")
+				return
+			}
+			writeStoreError(w, err)
+			return
+		}
+		h.broker.ping(key)
+		set, sc := h.store.PasswordInfo(key)
+		writeJSON(w, http.StatusOK, struct {
+			PasswordSet bool   `json:"passwordSet"`
+			Scope       string `json:"scope,omitempty"`
+		}{set, sc})
+	default:
+		methodNotAllowed(w, http.MethodGet, http.MethodPut)
+	}
+}
+
+// --- Room password read gating ---------------------------------------------
+
+// viewProtected reports whether reading the room requires its password
+// (scope "view").
+func (h *Handler) viewProtected(key string) bool {
+	set, scope := h.store.PasswordInfo(key)
+	return set && scope == model.PasswordScopeView
+}
+
+// roomPasswordFromRequest extracts the room password from a read request
+// (X-Goclip-Password header or ?password= query), for view-protected rooms.
+func roomPasswordFromRequest(r *http.Request) string {
+	if p := strings.TrimSpace(r.Header.Get("X-Goclip-Password")); p != "" {
+		return p
+	}
+	return strings.TrimSpace(r.URL.Query().Get("password"))
 }
 
 // --- WebSocket realtime ------------------------------------------------------
@@ -385,6 +533,7 @@ type wsOutbound struct {
 	ExpiresAt  string      `json:"expiresAt,omitempty"`
 	Version    int64       `json:"version,omitempty"`
 	Generation int64       `json:"generation,omitempty"`
+	ViewKey    string      `json:"viewKey,omitempty"`
 	Exists     *bool       `json:"exists,omitempty"`
 	UpdatedBy  string      `json:"updatedBy,omitempty"`
 	Items      []crdt.Item `json:"items,omitempty"`
@@ -395,6 +544,14 @@ type wsOutbound struct {
 	Files             []model.FileInfo `json:"files,omitempty"`
 	FilesVersion      int64            `json:"filesVersion,omitempty"`
 	FileUploadEnabled *bool            `json:"fileUploadEnabled,omitempty"`
+	// EditPasswordSet reports whether the room is locked (never the password).
+	EditPasswordSet *bool `json:"editPasswordSet,omitempty"`
+	// PasswordScope reports what the room password gates ("edit" | "view").
+	PasswordScope string `json:"passwordScope,omitempty"`
+	// PasswordRequired marks a state frame for a view-protected room sent to
+	// an unauthenticated session: content/items are withheld until the
+	// client presents the room password via an "auth" message.
+	PasswordRequired *bool `json:"passwordRequired,omitempty"`
 }
 
 type wsInbound struct {
@@ -406,13 +563,43 @@ type wsInbound struct {
 	Color            string    `json:"color"`
 	Ops              []crdt.Op `json:"ops,omitempty"`
 	TTLSeconds       int64     `json:"ttlSeconds,omitempty"`
+	// Password authenticates writes to rooms locked with an edit password.
+	Password string `json:"password,omitempty"`
 	// Seq is a client-chosen batch id echoed back in the ack so senders can
 	// track unacked ops across flaky connections.
 	Seq int64 `json:"seq,omitempty"`
 }
 
+// wsSession tracks per-connection state for view-protected rooms: until the
+// client presents the room password via an "auth" message, content, files
+// and cursors are withheld.
+type wsSession struct {
+	authed bool
+}
+
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key string) {
 	clientID := sanitizeClientID(r.URL.Query().Get("clientId"))
+
+	// Read-only (view link) sessions receive state/cursors/files but every op
+	// is rejected, so a shared view link can never mutate the room.
+	// ?view=true opens read-only on any room; legacy view links carrying the
+	// room's ViewKey are still honored; any other value is rejected so it can
+	// never silently become a read-write session.
+	viewParam := strings.TrimSpace(r.URL.Query().Get("view"))
+	var readOnly bool
+	switch viewParam {
+	case "":
+		readOnly = false
+	case "true":
+		readOnly = true
+	default:
+		item, ok := h.store.Peek(key)
+		if !ok || item.ViewKey == "" || !secureEqual(item.ViewKey, viewParam) {
+			writeError(w, http.StatusForbidden, "invalid view key")
+			return
+		}
+		readOnly = true
+	}
 
 	// DoS guard: cap concurrent sockets globally and per IP. The check runs
 	// before the upgrade so a flood is rejected with a cheap HTTP response
@@ -465,7 +652,11 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 		lastExists     bool
 		lastFilesRev   int64 = -1
 	)
-	lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true)
+	sess := &wsSession{}
+	// Fired by the read loop once an "auth" message unlocks a view-protected
+	// room; the main loop then pushes the real room state.
+	authedCh := make(chan struct{}, 1)
+	lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true, sess.authed)
 
 	// Per-connection inbound message budget (flood guard); see tokenBucket.
 	bucket := newTokenBucket(h.wsMsgRate, float64(h.wsMsgBurst))
@@ -473,7 +664,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
-		h.wsReadLoop(conn, send, key, clientID, bucket)
+		h.wsReadLoop(conn, send, key, clientID, bucket, readOnly, sess, authedCh)
 	}()
 	defer func() {
 		// Stop both producers before closing send. The read loop may still be
@@ -497,8 +688,11 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 			return
 		case <-r.Context().Done():
 			return
+		case <-authedCh:
+			// Session unlocked a view-protected room: push the full state.
+			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true, sess.authed)
 		case <-ch:
-			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false)
+			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false, sess.authed)
 		case <-pingTicker.C:
 			select {
 			case send <- wsControl{ping: true}:
@@ -507,7 +701,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 		case <-presenceTicker.C:
 			// Push pruned presence so idle/left peers drop without waiting for edits.
 			// Also re-check file list in case TTL expiry dropped files without a write path.
-			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false)
+			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false, sess.authed)
 		}
 	}
 }
@@ -536,7 +730,7 @@ func (h *Handler) wsWriteLoop(conn *websocket.Conn, send <-chan any) {
 	_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
-func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID string, bucket *tokenBucket) {
+func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID string, bucket *tokenBucket, readOnly bool, sess *wsSession, authedCh chan<- struct{}) {
 	for {
 		// Exceeding the per-connection budget cuts the socket; the client's
 		// reconnect path resyncs from the authoritative state snapshot, so
@@ -552,6 +746,20 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 			return
 		}
 		switch msg.Type {
+		case "auth":
+			// View-protected rooms: unlock this session once the room
+			// password checks out; the main loop then pushes the real state.
+			if h.viewProtected(key) {
+				if h.store.PasswordOK(key, msg.Password) {
+					sess.authed = true
+					select {
+					case authedCh <- struct{}{}:
+					default:
+					}
+				} else {
+					h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "invalid view password"})
+				}
+			}
 		case "cursor":
 			if clientID == "" {
 				continue
@@ -570,7 +778,21 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 			})
 			h.broker.ping(key)
 		case "ops":
-			if clientID == "" {
+			if clientID == "" || readOnly {
+				// Read-only sessions never mutate the room (defense in depth;
+				// the read-only UI does not send ops at all).
+				continue
+			}
+			if h.viewProtected(key) && !sess.authed {
+				// Session has not presented the room password yet.
+				h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "view password required"})
+				continue
+			}
+			// Locked rooms reject op batches (and TTL refreshes) without the
+			// room password — except sessions that already authenticated
+			// with it (view scope), which have proven the password once.
+			if h.store.HasPassword(key) && !sess.authed && !h.store.PasswordOK(key, msg.Password) {
+				h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "edit password required"})
 				continue
 			}
 			h.handleWSOps(send, key, clientID, msg)
@@ -579,7 +801,7 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 			// wants an authoritative snapshot.
 			cur, exists := h.store.Peek(key)
 			select {
-			case send <- h.stateMessage(key, cur, exists):
+			case send <- h.stateMessage(key, cur, exists, sess.authed):
 			default:
 			}
 		case "pong", "ping":
@@ -591,6 +813,9 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 }
 
 func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbound) {
+	// Password enforcement happens in wsReadLoop (per-session): authenticated
+	// view sessions are exempt, everything else must present the password on
+	// each batch. Read-only sessions never reach this function.
 	var ttl time.Duration
 	if msg.TTLSeconds > 0 {
 		d, err := model.TTLFromSeconds(msg.TTLSeconds)
@@ -614,7 +839,7 @@ func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbou
 		h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: err.Error()})
 		cur, exists := h.store.Peek(key)
 		select {
-		case send <- h.stateMessage(key, cur, exists):
+		case send <- h.stateMessage(key, cur, exists, true):
 		default:
 		}
 		return
@@ -694,7 +919,7 @@ func (h *Handler) takeEvent(key string, version, generation int64) (contentEvent
 	return ev, true
 }
 
-func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVersion, lastGeneration int64, lastExists bool, lastFilesRev int64, forceContent bool) (int64, int64, bool, int64) {
+func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVersion, lastGeneration int64, lastExists bool, lastFilesRev int64, forceContent bool, authed bool) (int64, int64, bool, int64) {
 	// Peek (no deep clone): this runs per connection every presence tick
 	// (~5s) even when nothing changed; cloning the whole document each time
 	// would be pure waste on large rooms.
@@ -710,12 +935,16 @@ func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVe
 		h.forgetEvent(key)
 	}
 
+	// View-protected rooms withhold content (and presence) until the session
+	// presents the room password via an "auth" message.
+	viewLocked := h.viewProtected(key) && !authed
+
 	contentChanged := forceContent || exists != lastExists || version != lastVersion || generation != lastGeneration
 	if contentChanged {
 		var msg wsOutbound
 		if forceContent || !exists {
-			msg = h.stateMessage(key, item, exists)
-		} else if ev, ok := h.takeEvent(key, version, generation); ok && !ev.full && len(ev.ops) > 0 && generation == lastGeneration && version == lastVersion+1 && lastExists {
+			msg = h.stateMessage(key, item, exists, authed)
+		} else if ev, ok := h.takeEvent(key, version, generation); ok && !ev.full && len(ev.ops) > 0 && generation == lastGeneration && version == lastVersion+1 && lastExists && !viewLocked {
 			// Compact ops diff is only valid when this client saw the
 			// immediately preceding version; any gap (coalesced wakeups,
 			// earlier dropped send) requires a full snapshot, otherwise the
@@ -734,7 +963,7 @@ func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVe
 			msg.TTLSeconds = int64(item.TTL.Seconds())
 			msg.ExpiresAt = item.ExpiresAt.UTC().Format(time.RFC3339)
 		} else {
-			msg = h.stateMessage(key, item, exists)
+			msg = h.stateMessage(key, item, exists, authed)
 		}
 		select {
 		case send <- msg:
@@ -745,6 +974,11 @@ func (h *Handler) enqueueRoomState(send chan<- any, key, clientID string, lastVe
 			// Client too slow — drop, but keep lastVersion stale so the next
 			// broker ping / presence tick actually retries the update.
 		}
+	}
+
+	if viewLocked {
+		// No file list, no cursors: both leak room content.
+		return lastVersion, lastGeneration, lastExists, lastFilesRev
 	}
 
 	// File list sync (metadata only). forceContent also pushes initial files snapshot.
@@ -781,8 +1015,28 @@ func (h *Handler) filesMessage(key string, files []model.FileInfo, rev int64, up
 	}
 }
 
-func (h *Handler) stateMessage(key string, item model.Clipboard, exists bool) wsOutbound {
+func (h *Handler) stateMessage(key string, item model.Clipboard, exists bool, authed bool) wsOutbound {
 	msg := wsOutbound{Type: "state", Key: key, Generation: item.Generation}
+	locked := exists && item.Password != ""
+	msg.EditPasswordSet = &locked
+	scope := model.PasswordScopeOf(item.PasswordScope)
+	if locked {
+		msg.PasswordScope = scope
+	}
+	if locked && !authed && scope == model.PasswordScopeView {
+		// View-protected room, session not authenticated yet: withhold all
+		// content until the client presents the room password.
+		required := true
+		existsTrue := true
+		msg.PasswordRequired = &required
+		msg.Exists = &existsTrue
+		msg.Content = ""
+		msg.TTLSeconds = int64(defaultTTL.Seconds())
+		msg.Version = item.Version
+		msg.Generation = item.Generation
+		msg.Items = []crdt.Item{}
+		return msg
+	}
 	if exists {
 		resp := model.ResponseFromClipboard(key, item, true)
 		msg.Content = resp.Content
@@ -790,6 +1044,7 @@ func (h *Handler) stateMessage(key string, item model.Clipboard, exists bool) ws
 		msg.ExpiresAt = resp.ExpiresAt
 		msg.Version = resp.Version
 		msg.Generation = resp.Generation
+		msg.ViewKey = resp.ViewKey
 		existsTrue := true
 		msg.Exists = &existsTrue
 		msg.UpdatedBy = resp.UpdatedBy
@@ -918,6 +1173,19 @@ func (b *broker) ping(key string) {
 		default:
 		}
 	}
+}
+
+// secureEqual compares two secrets in constant time (length-checked).
+func secureEqual(expected, provided string) bool {
+	if expected == "" || provided == "" {
+		return false
+	}
+	if len(expected) != len(provided) {
+		// Burn comparable time to avoid a length-based timing oracle.
+		_ = subtle.ConstantTimeCompare([]byte(expected), []byte(expected))
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) == 1
 }
 
 // wsConnLimiter caps concurrent WebSocket connections globally and per client
@@ -1102,6 +1370,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		// 507: temporary capacity; clients can retry after other rooms expire.
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusInsufficientStorage, err.Error())
+	case errors.Is(err, store.ErrRoomNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
 	}

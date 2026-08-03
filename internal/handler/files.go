@@ -31,7 +31,7 @@ func (h *Handler) handleFilesAPI(w http.ResponseWriter, r *http.Request, roomKey
 	if rest == "" {
 		switch r.Method {
 		case http.MethodGet:
-			h.handleListFiles(w, roomKey)
+			h.handleListFiles(w, r, roomKey)
 		case http.MethodPost:
 			h.handleUploadFile(w, r, roomKey)
 		default:
@@ -61,7 +61,10 @@ func (h *Handler) handleFilesAPI(w http.ResponseWriter, r *http.Request, roomKey
 	}
 }
 
-func (h *Handler) handleListFiles(w http.ResponseWriter, roomKey string) {
+func (h *Handler) handleListFiles(w http.ResponseWriter, r *http.Request, roomKey string) {
+	if !h.requireViewPassword(w, r, roomKey) {
+		return
+	}
 	if h.files == nil {
 		writeJSON(w, http.StatusOK, model.FileListResponse{Key: roomKey, Files: []model.FileInfo{}})
 		return
@@ -227,6 +230,9 @@ func (h *Handler) handleDownloadFile(w http.ResponseWriter, r *http.Request, roo
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
+	if !h.requireViewPassword(w, r, roomKey) {
+		return
+	}
 	filePassword := extractFileDownloadPassword(r)
 	if strings.TrimSpace(filePassword) == "" {
 		writeError(w, http.StatusUnauthorized, "invalid file password")
@@ -274,6 +280,23 @@ func (h *Handler) handleDeleteFile(w http.ResponseWriter, r *http.Request, roomK
 	}
 	h.broker.ping(roomKey)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// requireViewPassword enforces the room password on reads when the room is
+// view-protected (scope "view"): the file list and downloads are part of the
+// room's content. Unprotected and edit-protected rooms pass through.
+func (h *Handler) requireViewPassword(w http.ResponseWriter, r *http.Request, roomKey string) bool {
+	if !h.viewProtected(roomKey) {
+		return true
+	}
+	if h.store.PasswordOK(roomKey, roomPasswordFromRequest(r)) {
+		return true
+	}
+	writeJSON(w, http.StatusUnauthorized, struct {
+		Error         string `json:"error"`
+		PasswordScope string `json:"passwordScope"`
+	}{"view password required", model.PasswordScopeView})
+	return false
 }
 
 func writeFileStoreError(w http.ResponseWriter, err error) {

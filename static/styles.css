@@ -2,23 +2,98 @@
   color-scheme: light;
   --bg: #f6f7f8;
   --panel: #ffffff;
+  --panel-2: #fafbfc;
   --text: #1a1a1a;
   --muted: #666;
   --line: #e2e5e9;
   --line-strong: #c5cad1;
+  --hover: #f3f4f6;
   --danger: #c0392b;
+  --danger-line: #e8b4ae;
+  --danger-hover: #fdf2f1;
   --ok: #1a7f37;
   --warn: #9a6700;
   --err: #cf222e;
   --up: #0969da;
   --down: #1a7f37;
+  --upload: #2a7a4b;
+  --placeholder: #aaa;
+  --path-hover: rgba(0, 0, 0, 0.04);
+  --drag-bg: #f0f6ff;
+  --backdrop: rgba(20, 24, 28, 0.42);
+  --shadow: rgba(0, 0, 0, 0.16);
+  --card-text: #fff;
   --pad-x: 20px;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
+/* Dark theme: explicit data-theme wins, otherwise follow the system. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #151619;
+  --panel: #1e2024;
+  --panel-2: #23262b;
+  --text: #d8dae0;
+  --muted: #9aa0a8;
+  --line: #2e3138;
+  --line-strong: #3d414a;
+  --hover: #26292f;
+  --danger: #e5534b;
+  --danger-line: rgba(229, 83, 75, 0.45);
+  --danger-hover: rgba(229, 83, 75, 0.12);
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+  --up: #58a6ff;
+  --down: #3fb950;
+  --upload: #3fb950;
+  --placeholder: #6b7078;
+  --path-hover: rgba(255, 255, 255, 0.07);
+  --drag-bg: rgba(88, 166, 255, 0.10);
+  --backdrop: rgba(0, 0, 0, 0.62);
+  --shadow: rgba(0, 0, 0, 0.55);
+  --card-text: #1a1b1e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #151619;
+    --panel: #1e2024;
+    --panel-2: #23262b;
+    --text: #d8dae0;
+    --muted: #9aa0a8;
+    --line: #2e3138;
+    --line-strong: #3d414a;
+    --hover: #26292f;
+    --danger: #e5534b;
+    --danger-line: rgba(229, 83, 75, 0.45);
+    --danger-hover: rgba(229, 83, 75, 0.12);
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --up: #58a6ff;
+    --down: #3fb950;
+    --upload: #3fb950;
+    --placeholder: #6b7078;
+    --path-hover: rgba(255, 255, 255, 0.07);
+    --drag-bg: rgba(88, 166, 255, 0.10);
+    --backdrop: rgba(0, 0, 0, 0.62);
+    --shadow: rgba(0, 0, 0, 0.55);
+    --card-text: #1a1b1e;
+  }
+}
+
 * {
   box-sizing: border-box;
+}
+
+/* The UA rule [hidden]{display:none} loses to author display:flex/inline-flex
+   rules (ttl-field, icon-btn, share-link-row …), so JS-hidden elements stayed
+   visible. Enforce hiding globally. */
+[hidden] {
+  display: none !important;
 }
 
 body {
@@ -65,6 +140,20 @@ body {
   align-self: flex-start;
 }
 
+/* Room number + read-only badge on one line */
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.path-row .path {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .brand-name {
   margin: 0 0 2px;
   color: var(--muted);
@@ -92,17 +181,23 @@ body {
 }
 
 .path:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--path-hover);
 }
 
 .path.upload-on {
-  color: #2a7a4b;
+  color: var(--upload);
 }
 
 .path.upload-on::after {
-  content: " ↑";
-  font-size: 0.72em;
-  font-weight: 700;
+  content: "";
+  display: inline-block;
+  width: 0.82em;
+  height: 0.82em;
+  margin-left: 3px;
+  vertical-align: -0.08em;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='12' y1='19' x2='12' y2='5'/%3E%3Cpolyline points='5 12 12 5 19 12'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='12' y1='19' x2='12' y2='5'/%3E%3Cpolyline points='5 12 12 5 19 12'/%3E%3C/svg%3E") no-repeat center / contain;
   opacity: 0.75;
 }
 
@@ -214,16 +309,16 @@ button {
 }
 
 button:hover {
-  background: #f3f4f6;
+  background: var(--hover);
 }
 
 button.danger {
   color: var(--danger);
-  border-color: #e8b4ae;
+  border-color: var(--danger-line);
 }
 
 button.danger:hover {
-  background: #fdf2f1;
+  background: var(--danger-hover);
 }
 
 button:disabled {
@@ -278,7 +373,7 @@ select:focus-visible {
   padding: 0 9px 0 7px;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: #fafbfc;
+  background: var(--panel-2);
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 600;
@@ -301,7 +396,7 @@ select:focus-visible {
 
 .peer-tab.is-self {
   border-color: var(--peer-color, #888);
-  background: #fff;
+  background: var(--panel);
 }
 
 .peer-tab.is-self::after {
@@ -390,6 +485,7 @@ textarea:focus {
 .editor-wrapper {
   position: relative;
   min-height: 0;
+  min-width: 0; /* grid item: don't grow to min-content of unbreakable preview content */
   display: flex;
   flex-direction: column;
 }
@@ -412,7 +508,7 @@ textarea {
 }
 
 .editor-wrapper textarea::placeholder {
-  color: #aaa;
+  color: var(--placeholder);
   font-family: var(--sans);
 }
 
@@ -439,7 +535,7 @@ textarea {
   top: -1.2em;
   left: 0;
   padding: 1px 6px;
-  color: #fff;
+  color: var(--card-text);
   font-size: 11px;
   font-weight: 600;
   font-family: var(--mono);
@@ -501,7 +597,7 @@ textarea {
 .files-panel {
   border-top: 1px solid var(--line);
   padding: 14px var(--pad-x) 16px;
-  background: #fafbfc;
+  background: var(--panel-2);
   min-height: 0;
 }
 
@@ -632,23 +728,23 @@ textarea {
 }
 
 .file-actions button:hover {
-  background: #f3f4f6;
+  background: var(--hover);
 }
 
 .file-actions button.danger {
   color: var(--danger);
-  border-color: #e8b4ae;
+  border-color: var(--danger-line);
 }
 
 .file-actions button.danger:hover {
-  background: #fdf2f1;
+  background: var(--danger-hover);
 }
 
 /* Editor drop target highlight */
 .app.is-file-dragover .editor-wrapper {
   outline: 2px dashed var(--up);
   outline-offset: -6px;
-  background: #f0f6ff;
+  background: var(--drag-bg);
 }
 
 button.ghost {
@@ -659,7 +755,7 @@ button.ghost {
 
 button.ghost:hover {
   color: var(--text);
-  background: #f3f4f6;
+  background: var(--hover);
 }
 
 /* ── Password modal ──────────────────────────────────── */
@@ -674,6 +770,12 @@ button.ghost:hover {
   padding: 20px;
 }
 
+/* The password dialog opens on top of other modals (e.g. from the share
+   dialog), so it must stack above the shared .modal level. */
+#passwordModal {
+  z-index: 1100;
+}
+
 .modal[hidden] {
   display: none !important;
 }
@@ -681,7 +783,7 @@ button.ghost:hover {
 .modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(20, 24, 28, 0.42);
+  background: var(--backdrop);
 }
 
 .modal-card {
@@ -691,7 +793,7 @@ button.ghost:hover {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.16);
+  box-shadow: 0 16px 48px var(--shadow);
 }
 
 .modal-title {
@@ -719,7 +821,7 @@ button.ghost:hover {
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: #fafbfc;
+  background: var(--panel-2);
   font-size: 12px;
   font-family: var(--mono);
 }
@@ -785,6 +887,124 @@ button.ghost:hover {
 
 .modal-actions button {
   min-width: 72px;
+}
+
+/* ── Toast notifications (top-right) ──────────────────── */
+
+.toast-wrap {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+  max-width: min(380px, calc(100vw - 32px));
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
+  padding: 10px 12px 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--err);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--shadow);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast.ok {
+  border-left-color: var(--ok);
+}
+
+.toast.leaving {
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.toast-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.toast-close:hover {
+  color: var(--text);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Room-password dialog extras: regenerate button + scope radios */
+.modal-password-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-password-row button.ghost {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.modal-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0 0 10px;
+  padding: 0 2px;
+}
+
+.modal-scope-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.modal-scope-opt input {
+  accent-color: var(--accent, #4f8cff);
+  margin: 0;
+}
+
+.modal-scope-opt:hover {
+  color: var(--text);
 }
 
 /* ── Tablet / narrow desktop ─────────────────────────── */
@@ -968,5 +1188,429 @@ button.ghost:hover {
 @media (prefers-reduced-motion: reduce) {
   .dot {
     transition: none;
+  }
+}
+
+/* ── Compact icon buttons (undo / redo / preview / share / history / theme) ── */
+
+.icon-btn {
+  min-width: 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  flex: 0 0 auto;
+  border-radius: 10px;
+}
+
+.icon-btn[disabled] {
+  opacity: 0.35;
+}
+
+.icon-btn[data-active="true"] {
+  background: var(--hover);
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── Read-only badge (right of the room number) ───────── */
+
+.readonly-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  font-family: var(--sans);
+  white-space: nowrap;
+  color: var(--warn);
+}
+
+.readonly-banner[hidden] {
+  display: none;
+}
+
+.readonly-banner svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
+}
+
+/* ── Markdown preview ────────────────────────────────── */
+
+.preview-pane {
+  flex: 1;
+  min-height: 0;
+  min-width: 0; /* flex item: never force the wrapper wider than the grid track */
+  overflow: auto;
+  padding: 18px 20px;
+  background: var(--panel);
+}
+
+.preview-pane[hidden] {
+  display: none;
+}
+
+.md-body {
+  max-width: 100%;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.65;
+  /* "anywhere" (not just break-word) also shrinks the min-content size, so
+     long URLs/words wrap instead of stretching the layout horizontally. */
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.md-body > :first-child {
+  margin-top: 0;
+}
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 1.4em 0 0.6em;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.md-body h1 {
+  font-size: 1.5em;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.3em;
+}
+
+.md-body h2 {
+  font-size: 1.3em;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.25em;
+}
+
+.md-body h3 {
+  font-size: 1.15em;
+}
+
+.md-body p {
+  margin: 0.7em 0;
+}
+
+.md-body a {
+  color: var(--up);
+  text-decoration: none;
+}
+
+.md-body a:hover {
+  text-decoration: underline;
+}
+
+.md-body ul,
+.md-body ol {
+  margin: 0.6em 0;
+  padding-left: 1.6em;
+}
+
+.md-body li {
+  margin: 0.2em 0;
+}
+
+.md-body li > ul,
+.md-body li > ol {
+  margin: 0.2em 0;
+}
+
+.md-body blockquote {
+  margin: 0.8em 0;
+  padding: 2px 14px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted);
+}
+
+.md-body code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.md-body pre {
+  margin: 0.9em 0;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: auto;
+  line-height: 1.5;
+  /* undo the inherited overflow-wrap:anywhere: code keeps its line breaks
+     and long lines scroll horizontally instead of wrapping. */
+  word-wrap: normal;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.md-body pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.md-body pre code.hljs {
+  background: transparent;
+  padding: 0;
+  /* Vendor hljs themes make code.hljs its own scroll container
+     (display:block; overflow-x:auto), which hides the scrollbar inside the
+     pre's padding. Fold the scrolling back into the pre so long lines
+     scroll at the block edge, inside the border/radius. */
+  display: block;
+  overflow: visible;
+}
+
+.md-body table {
+  border-collapse: collapse;
+  margin: 0.9em 0;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line-strong);
+  padding: 5px 11px;
+  font-size: 0.95em;
+}
+
+.md-body th {
+  background: var(--panel-2);
+  font-weight: 600;
+}
+
+.md-body hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.2em 0;
+}
+
+.md-body img {
+  max-width: 100%;
+}
+
+/* ── Share / QR modal ────────────────────────────────── */
+
+.share-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.share-qr-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.share-qr-wrap {
+  flex: 0 0 auto;
+  width: 168px;
+  height: 168px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.share-qr-wrap svg,
+.share-qr-wrap img {
+  width: 100%;
+  height: 100%;
+}
+
+.share-qr-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.share-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.share-link-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.share-link-row .share-link-lab {
+  flex: 0 0 52px;
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.share-mode {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+.share-link-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.share-link-row button {
+  flex: 0 0 auto;
+  min-width: 56px;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.share-link-row button.share-mini {
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.copy-ok {
+  color: var(--ok);
+}
+
+/* ── Version history modal ───────────────────────────── */
+
+.history-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  min-width: 0;
+}
+
+.history-item .history-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-item .history-when {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.history-item .history-preview {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-empty {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 18px 0;
+}
+
+.history-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ── Mobile tweaks for the new controls ──────────────── */
+
+@media (max-width: 560px) {
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+  }
+
+  .share-qr-row {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .share-qr-note {
+    text-align: center;
+  }
+
+  .preview-pane {
+    padding: 14px;
   }
 }

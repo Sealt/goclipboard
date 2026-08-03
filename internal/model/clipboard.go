@@ -19,8 +19,45 @@ type Clipboard struct {
 	// expired/deleted room is created again, so version 1 from a new room cannot
 	// be mistaken for version 1 from an older incarnation.
 	Generation int64
-	UpdatedAt  time.Time
-	UpdatedBy  string
+	// ViewKey is the read-only access key for the room, distinct from the
+	// edit key (the room key in the URL path). It is generated once when the
+	// room is created and never changes. View links are {key}?view=true
+	// (legacy {key}?view={ViewKey} links are still honored); WebSocket
+	// sessions presenting a valid view flag are read-only (ops are rejected
+	// server-side). Note: the view URL contains the room key in its path, so
+	// this guards against accidental edits, not against a determined holder
+	// of the view link.
+	ViewKey   string
+	// Password, when set, protects the room. PasswordScope decides what it
+	// gates: PasswordScopeEdit locks writes only (reads stay open — legacy
+	// behavior); PasswordScopeView locks reads and writes, i.e. the password
+	// must be presented to view the content at all. The password is chosen
+	// by the client that locks the room and never sent back in any response,
+	// so link holders cannot obtain it by stripping ?view=true — the server
+	// rejects their reads/writes outright.
+	Password      string
+	PasswordScope string // "" | "edit" | "view" ("" on a locked room = "edit")
+	UpdatedAt     time.Time
+	UpdatedBy     string
+}
+
+// Password scopes.
+const (
+	// PasswordScopeEdit gates writes only (reads stay open).
+	PasswordScopeEdit = "edit"
+	// PasswordScopeView gates reads and writes (the password is required to
+	// view the content at all).
+	PasswordScopeView = "view"
+)
+
+// PasswordScopeOf normalizes a stored scope. Legacy rooms (locked before
+// scope support) have an empty scope, which means the password gates edits —
+// the historical behavior.
+func PasswordScopeOf(scope string) string {
+	if scope == "" {
+		return PasswordScopeEdit
+	}
+	return scope
 }
 
 type ClipboardResponse struct {
@@ -30,13 +67,22 @@ type ClipboardResponse struct {
 	ExpiresAt  string `json:"expiresAt,omitempty"`
 	Version    int64  `json:"version"`
 	Generation int64  `json:"generation,omitempty"`
-	Exists     bool   `json:"exists"`
-	UpdatedBy  string `json:"updatedBy,omitempty"`
+	ViewKey    string `json:"viewKey,omitempty"`
+	// EditPasswordSet reports whether the room is locked (never the password
+	// itself, so it is safe for any reader of the room to see).
+	EditPasswordSet bool `json:"editPasswordSet,omitempty"`
+	// PasswordScope reports what the room password gates: "edit" (writes
+	// only, legacy) or "view" (reads and writes). Empty when unlocked.
+	PasswordScope string `json:"passwordScope,omitempty"`
+	Exists        bool   `json:"exists"`
+	UpdatedBy       string `json:"updatedBy,omitempty"`
 }
 
 type SaveRequest struct {
 	Content    string `json:"content"`
 	TTLSeconds int64  `json:"ttlSeconds"`
+	// Password is required when the room is locked with an edit password.
+	Password string `json:"password,omitempty"`
 	// BaseVersion > 0 requests optimistic concurrency: the save is rejected
 	// with 409 (plus current state) unless the stored version still matches,
 	// so offline/REST clients can merge instead of blindly overwriting.
@@ -46,6 +92,17 @@ type SaveRequest struct {
 }
 
 const VersionNotExists = int64(0)
+
+// EditPasswordRequest sets, rotates or clears a room password.
+// CurrentPassword must match when the room is already locked.
+type EditPasswordRequest struct {
+	Password        string `json:"password"`
+	CurrentPassword string `json:"currentPassword,omitempty"`
+	// Scope selects what the password gates: "edit" (writes only) or
+	// "view" (reads and writes). Empty keeps the current scope (defaults
+	// to "edit" for a freshly locked room).
+	Scope string `json:"scope,omitempty"`
+}
 
 var KeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
@@ -100,14 +157,21 @@ type CursorEvent struct {
 }
 
 func ResponseFromClipboard(key string, item Clipboard, exists bool) ClipboardResponse {
+	scope := ""
+	if item.Password != "" {
+		scope = PasswordScopeOf(item.PasswordScope)
+	}
 	return ClipboardResponse{
-		Key:        key,
-		Content:    item.Content,
-		TTLSeconds: int64(item.TTL.Seconds()),
-		ExpiresAt:  item.ExpiresAt.UTC().Format(time.RFC3339),
-		Version:    item.Version,
-		Generation: item.Generation,
-		Exists:     exists,
-		UpdatedBy:  item.UpdatedBy,
+		Key:             key,
+		Content:         item.Content,
+		TTLSeconds:      int64(item.TTL.Seconds()),
+		ExpiresAt:       item.ExpiresAt.UTC().Format(time.RFC3339),
+		Version:         item.Version,
+		Generation:      item.Generation,
+		ViewKey:         item.ViewKey,
+		EditPasswordSet: item.Password != "",
+		PasswordScope:   scope,
+		Exists:          exists,
+		UpdatedBy:       item.UpdatedBy,
 	}
 }
