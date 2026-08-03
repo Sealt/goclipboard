@@ -3,6 +3,7 @@ package middleware
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -10,6 +11,94 @@ import (
 	"sync"
 	"time"
 )
+
+// IPResolver decides which client IP is used for rate limiting and banning.
+//
+// Forwarded headers (X-Forwarded-For, X-Real-IP) are only honored when the
+// direct peer (RemoteAddr) is inside one of the configured trusted proxy
+// CIDRs. With no trusted proxies configured (the default), the client IP is
+// always the direct peer, so spoofed headers can neither bypass limits nor
+// get arbitrary victim IPs banned.
+type IPResolver struct {
+	trusted []*net.IPNet
+}
+
+// NewIPResolver parses a comma-separated list of trusted proxy CIDRs
+// (e.g. "127.0.0.1/32,10.0.0.0/8"). Empty input trusts no proxies.
+func NewIPResolver(trustedProxyCIDRs string) (*IPResolver, error) {
+	r := &IPResolver{}
+	for _, part := range strings.Split(trustedProxyCIDRs, ",") {
+		cidr := strings.TrimSpace(part)
+		if cidr == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR %q: %w", cidr, err)
+		}
+		r.trusted = append(r.trusted, ipNet)
+	}
+	return r, nil
+}
+
+// ClientIP returns the effective client IP for r. A nil resolver (or one with
+// no trusted proxies) always reports the direct peer address.
+func (r *IPResolver) ClientIP(req *http.Request) string {
+	host := remoteHost(req.RemoteAddr)
+	if r == nil {
+		return host
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !r.trusts(ip) {
+		return host
+	}
+	if forwarded := forwardedClientIP(req); forwarded != "" {
+		return forwarded
+	}
+	return host
+}
+
+func (r *IPResolver) trusts(ip net.IP) bool {
+	for _, n := range r.trusted {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardedClientIP extracts the first X-Forwarded-For entry, falling back to
+// X-Real-IP. Callers must only invoke this after verifying the direct peer is
+// a trusted proxy; values that do not parse as IPs are ignored.
+func forwardedClientIP(req *http.Request) string {
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx != -1 {
+			xff = xff[:idx]
+		}
+		xff = strings.TrimSpace(xff)
+		if ip := net.ParseIP(xff); ip != nil {
+			return ip.String()
+		}
+	}
+	if xri := strings.TrimSpace(req.Header.Get("X-Real-IP")); xri != "" {
+		if ip := net.ParseIP(xri); ip != nil {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+func remoteHost(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	// No port (unusual): strip a trailing ":port" only for bare IPv4/hostnames;
+	// bare IPv6 addresses are returned untouched.
+	if idx := strings.LastIndex(remoteAddr, ":"); idx != -1 && !strings.Contains(remoteAddr[idx+1:], ":") {
+		return remoteAddr[:idx]
+	}
+	return remoteAddr
+}
 
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +163,7 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
 
-func RateLimiter(rate float64, burst int) func(http.Handler) http.Handler {
+func RateLimiter(rate float64, burst int, resolver *IPResolver) func(http.Handler) http.Handler {
 	rl := &rateLimiter{
 		entries: make(map[string]*rateLimitEntry),
 		rate:    rate,
@@ -89,7 +178,7 @@ func RateLimiter(rate float64, burst int) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if !rl.allow(clientIP(r)) {
+			if !rl.allow(resolver.ClientIP(r)) {
 				w.Header().Set("Retry-After", "1")
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 				w.WriteHeader(http.StatusTooManyRequests)
@@ -163,21 +252,4 @@ func (rl *rateLimiter) runCleanup() {
 		}
 		rl.mu.Unlock()
 	}
-}
-
-func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		if idx := strings.Index(ip, ","); idx != -1 {
-			ip = ip[:idx]
-		}
-		return strings.TrimSpace(ip)
-	}
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
-	}
-	ip := r.RemoteAddr
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
-	}
-	return ip
 }

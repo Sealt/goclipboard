@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -759,5 +760,70 @@ func TestWebSocketNoOpsGapAfterCoalescedUpdates(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func newTestHandlerWithOpts(opts Options) *Handler {
+	staticFS, _ := fs.Sub(testStatic, "testdata")
+	return New(store.New(), staticFS, nil, opts)
+}
+
+func TestWebSocketConnLimits(t *testing.T) {
+	h := newTestHandlerWithOpts(Options{MaxWSConns: 2, MaxWSConnsPerIP: 1})
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/lim/ws?clientId=a"
+	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	if err != nil {
+		t.Fatalf("first dial should succeed: %v", err)
+	}
+	defer conn.Close()
+
+	// Both dials come from the same IP (httptest loopback); the per-IP cap
+	// (and the global cap) must reject the second with 503 before upgrade.
+	conn2, resp, err := websocket.DefaultDialer.Dial(u+"2", nil)
+	if err == nil {
+		conn2.Close()
+		t.Fatal("second dial should have been rejected")
+	}
+	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 rejection, got response %v err %v", resp, err)
+	}
+}
+
+func TestWebSocketMessageRateLimit(t *testing.T) {
+	h := newTestHandlerWithOpts(Options{WSMsgRate: 1, WSMsgBurst: 2})
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/rate/ws?clientId=c"
+	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Drain the initial snapshot frames (state + cursor).
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	for i := 0; i < 4; i++ {
+		var dump wsOutbound
+		if err := conn.ReadJSON(&dump); err != nil {
+			break
+		}
+	}
+
+	// Burst=2: the first two inbound messages pass; the third exhausts the
+	// bucket and the server must close the connection.
+	for i := 0; i < 3; i++ {
+		msg := fmt.Sprintf(`{"type":"ops","seq":%d,"ttlSeconds":3600}`, i+1)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var dump wsOutbound
+	if err := conn.ReadJSON(&dump); err == nil {
+		t.Fatal("expected connection to be closed after exceeding message budget")
 	}
 }

@@ -24,7 +24,7 @@ func cfg(hard, scan int) BlocklistConfig {
 }
 
 func TestBlocklistPassesNormalRequest(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(5, 10))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg(5, 10), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -39,7 +39,7 @@ func TestBlocklistPassesNormalRequest(t *testing.T) {
 }
 
 func TestNormal404NotCounted(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(5, 10))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg(5, 10), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 
@@ -56,7 +56,7 @@ func TestNormal404NotCounted(t *testing.T) {
 }
 
 func TestRepeatedSameScanPath(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(5, 3))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg(5, 3), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 
@@ -81,7 +81,7 @@ func TestRepeatedSameScanPath(t *testing.T) {
 }
 
 func TestHardViolationBans(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(3, 10))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg(3, 10), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 
@@ -103,7 +103,7 @@ func TestHardViolationBans(t *testing.T) {
 }
 
 func TestScanDiversityBans(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(10, 4))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg(10, 4), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 
@@ -137,7 +137,7 @@ func TestScanDiversityBans(t *testing.T) {
 }
 
 func TestMixedAttacks(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(3, 10))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg(3, 10), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 
@@ -169,7 +169,7 @@ func TestWindowReset(t *testing.T) {
 		BanSeconds:    60,
 	}
 
-	handler := Blocklist(testLogger(), cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 
@@ -202,7 +202,7 @@ func TestBanExpires(t *testing.T) {
 
 	var mu sync.Mutex
 	var banned bool
-	handler := Blocklist(testLogger(), cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		if banned {
 			t.Error("handler called while banned")
@@ -246,7 +246,7 @@ func TestBanExpires(t *testing.T) {
 }
 
 func TestSeparateIPs(t *testing.T) {
-	handler := Blocklist(testLogger(), cfg(2, 5))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Blocklist(testLogger(), cfg(2, 5), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 

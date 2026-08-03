@@ -39,7 +39,7 @@ type ipState struct {
 	windowTime time.Time
 }
 
-func Blocklist(logger *slog.Logger, cfg BlocklistConfig) func(http.Handler) http.Handler {
+func Blocklist(logger *slog.Logger, cfg BlocklistConfig, resolver *IPResolver) func(http.Handler) http.Handler {
 	bl := &blocklist{
 		bans:  make(map[string]time.Time),
 		state: make(map[string]*ipState),
@@ -50,7 +50,7 @@ func Blocklist(logger *slog.Logger, cfg BlocklistConfig) func(http.Handler) http
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r)
+			ip := resolver.ClientIP(r)
 			now := time.Now()
 
 			if bl.isBanned(ip, now) {

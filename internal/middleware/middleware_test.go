@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,7 +57,7 @@ func TestResponseWriterFlushDelegation(t *testing.T) {
 }
 
 func TestRateLimiterAllowed(t *testing.T) {
-	handler := RateLimiter(10, 5)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimiter(10, 5, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -72,7 +73,7 @@ func TestRateLimiterAllowed(t *testing.T) {
 }
 
 func TestRateLimiterBlocked(t *testing.T) {
-	handler := RateLimiter(0.001, 2)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimiter(0.001, 2, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -92,7 +93,7 @@ func TestRateLimiterBlocked(t *testing.T) {
 
 func TestRateLimiterSkipsCursorAndEvents(t *testing.T) {
 	// Burst=1 so a second limited request would 429; skipped paths must still pass.
-	handler := RateLimiter(0.001, 1)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimiter(0.001, 1, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -128,30 +129,85 @@ func TestRateLimiterSkipsCursorAndEvents(t *testing.T) {
 }
 
 func TestClientIP(t *testing.T) {
+	trustLocal, err := NewIPResolver("127.0.0.1/32,::1/128")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustAll, err := NewIPResolver("0.0.0.0/0,::/0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustNone, err := NewIPResolver("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	cases := []struct {
-		remoteAddr string
-		xff        string
-		xri        string
-		want       string
+		name     string
+		resolver *IPResolver
+		remote   string
+		xff      string
+		xri      string
+		want     string
 	}{
-		{"192.168.1.1:1234", "", "", "192.168.1.1"},
-		{"10.0.0.1:9999", "203.0.113.1", "", "203.0.113.1"},
-		{"10.0.0.1:9999", "203.0.113.1, 198.51.100.1", "", "203.0.113.1"},
-		{"10.0.0.1:9999", "", "198.51.100.1", "198.51.100.1"},
+		{"no headers", trustNone, "192.168.1.1:1234", "", "", "192.168.1.1"},
+		{"xff ignored when peer untrusted", trustNone, "10.0.0.1:9999", "203.0.113.1", "", "10.0.0.1"},
+		{"xri ignored when peer untrusted", trustNone, "10.0.0.1:9999", "", "198.51.100.1", "10.0.0.1"},
+		{"nil resolver never trusts headers", nil, "10.0.0.1:9999", "203.0.113.1", "", "10.0.0.1"},
+		{"xff honored from trusted proxy", trustLocal, "127.0.0.1:9999", "203.0.113.1", "", "203.0.113.1"},
+		{"xff first entry wins", trustAll, "10.0.0.1:9999", "203.0.113.1, 198.51.100.1", "", "203.0.113.1"},
+		{"xri fallback", trustAll, "10.0.0.1:9999", "", "198.51.100.1", "198.51.100.1"},
+		{"garbage xff falls back to remote", trustAll, "10.0.0.1:9999", "not-an-ip", "", "10.0.0.1"},
+		{"ipv6 loopback remote", trustLocal, "[::1]:8080", "203.0.113.1", "", "203.0.113.1"},
+		{"ipv6 remote without headers", trustNone, "[::1]:8080", "", "", "::1"},
 	}
 
 	for _, tc := range cases {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.RemoteAddr = tc.remoteAddr
-		if tc.xff != "" {
-			req.Header.Set("X-Forwarded-For", tc.xff)
-		}
-		if tc.xri != "" {
-			req.Header.Set("X-Real-IP", tc.xri)
-		}
-		got := clientIP(req)
-		if got != tc.want {
-			t.Fatalf("clientIP = %q, want %q (remote=%q xff=%q xri=%q)", got, tc.want, tc.remoteAddr, tc.xff, tc.xri)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = tc.remote
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if tc.xri != "" {
+				req.Header.Set("X-Real-IP", tc.xri)
+			}
+			if got := tc.resolver.ClientIP(req); got != tc.want {
+				t.Fatalf("ClientIP = %q, want %q (remote=%q xff=%q xri=%q)", got, tc.want, tc.remote, tc.xff, tc.xri)
+			}
+		})
+	}
+}
+
+func TestNewIPResolverInvalidCIDR(t *testing.T) {
+	if _, err := NewIPResolver("10.0.0.0/8,bogus"); err == nil {
+		t.Fatal("expected error for invalid CIDR")
+	}
+	if _, err := NewIPResolver("  "); err != nil {
+		t.Fatalf("blank input should parse cleanly, got %v", err)
+	}
+}
+
+func TestSpoofedXFFCannotBypassRateLimit(t *testing.T) {
+	// A client that is NOT a trusted proxy must not be able to rotate
+	// X-Forwarded-For to dodge the limiter.
+	handler := RateLimiter(0.001, 1, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/clipboard/x", nil)
+		req.RemoteAddr = "198.51.100.7:1234"
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("10.0.%d.%d", i, i))
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/clipboard/x", nil)
+	req.RemoteAddr = "198.51.100.7:1234"
+	req.Header.Set("X-Forwarded-For", "10.99.99.99")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 despite rotated XFF, got %d", res.Code)
 	}
 }

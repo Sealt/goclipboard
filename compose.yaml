@@ -14,7 +14,8 @@ services:
     volumes:
       - goclipboard-data:/data
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      # scratch 镜像没有 curl/wget —— 用二进制自带的 -healthcheck 模式探测 /healthz
+      test: ["CMD", "/goclipboard", "-healthcheck"]
       interval: 30s
       retries: 3
       start_period: 5s

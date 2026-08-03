@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"goclipboard/internal/crdt"
+	"goclipboard/internal/middleware"
 	"goclipboard/internal/model"
 	"goclipboard/internal/store"
 
@@ -39,6 +40,16 @@ const (
 	wsPresencePeriod = 5 * time.Second
 	// Large enough for op batches and CRDT state snapshots (content still capped at 1MiB).
 	wsMaxMessage = 256 << 10
+
+	// DoS guards for the WebSocket channel. Defaults leave headroom for
+	// legitimate multi-user sessions (a client flushes ops ~17 msg/s and
+	// cursors ~13 msg/s) while cutting off floods; a cut connection is
+	// self-healing because clients resync from the state snapshot on
+	// reconnect.
+	DefaultMaxWSConns      = 512
+	DefaultMaxWSConnsPerIP = 32
+	DefaultWSMsgRate       = 50.0 // tokens per second
+	DefaultWSMsgBurst      = 100
 )
 
 var upgrader = websocket.Upgrader{
@@ -65,6 +76,10 @@ type Handler struct {
 	broker         *broker
 	cursors        *cursorStore
 	static         fs.FS
+	ipResolver     *middleware.IPResolver
+	wsConns        *wsConnLimiter
+	wsMsgRate      float64
+	wsMsgBurst     int
 
 	// lastContentEvent lets WS subscribers send compact ops when possible.
 	eventMu sync.Mutex
@@ -86,21 +101,50 @@ type contentEvent struct {
 type Options struct {
 	Files          *store.FileStore
 	UploadPassword string
+	// IPResolver decides the client IP for per-IP WebSocket limits. Nil uses
+	// the direct peer address (no forwarded headers are trusted).
+	IPResolver *middleware.IPResolver
+	// WebSocket DoS guards. Zero or negative values keep the defaults.
+	MaxWSConns      int
+	MaxWSConnsPerIP int
+	WSMsgRate       float64 // per-connection inbound message tokens per second
+	WSMsgBurst      int     // per-connection inbound message burst
 }
 
 func New(sto *store.Store, static fs.FS, logger *slog.Logger, opts ...Options) *Handler {
 	h := &Handler{
-		store:     sto,
-		logger:    logger,
-		broker:    newBroker(),
-		cursors:   newCursorStore(),
-		static:    static,
-		lastEvent: make(map[string]contentEvent),
+		store:      sto,
+		logger:     logger,
+		broker:     newBroker(),
+		cursors:    newCursorStore(),
+		static:     static,
+		lastEvent:  make(map[string]contentEvent),
+		wsMsgRate:  DefaultWSMsgRate,
+		wsMsgBurst: DefaultWSMsgBurst,
 	}
+	maxWSConns, maxWSConnsPerIP := DefaultMaxWSConns, DefaultMaxWSConnsPerIP
 	if len(opts) > 0 {
 		h.files = opts[0].Files
 		h.uploadPassword = opts[0].UploadPassword
+		h.ipResolver = opts[0].IPResolver
+		if opts[0].MaxWSConns > 0 {
+			maxWSConns = opts[0].MaxWSConns
+		}
+		if opts[0].MaxWSConnsPerIP > 0 {
+			maxWSConnsPerIP = opts[0].MaxWSConnsPerIP
+		}
+		if opts[0].WSMsgRate > 0 {
+			h.wsMsgRate = opts[0].WSMsgRate
+		}
+		if opts[0].WSMsgBurst > 0 {
+			h.wsMsgBurst = opts[0].WSMsgBurst
+		}
 	}
+	if h.ipResolver == nil {
+		// Trust no proxies: forwarded headers never affect limits.
+		h.ipResolver, _ = middleware.NewIPResolver("")
+	}
+	h.wsConns = newWSConnLimiter(maxWSConns, maxWSConnsPerIP)
 	return h
 }
 
@@ -370,6 +414,16 @@ type wsInbound struct {
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key string) {
 	clientID := sanitizeClientID(r.URL.Query().Get("clientId"))
 
+	// DoS guard: cap concurrent sockets globally and per IP. The check runs
+	// before the upgrade so a flood is rejected with a cheap HTTP response
+	// instead of consuming per-connection goroutines and buffers.
+	clientIP := h.ipResolver.ClientIP(r)
+	if !h.wsConns.acquire(clientIP) {
+		writeError(w, http.StatusServiceUnavailable, "too many connections")
+		return
+	}
+	defer h.wsConns.release(clientIP)
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		if h.logger != nil {
@@ -413,10 +467,13 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 	)
 	lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true)
 
+	// Per-connection inbound message budget (flood guard); see tokenBucket.
+	bucket := newTokenBucket(h.wsMsgRate, float64(h.wsMsgBurst))
+
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
-		h.wsReadLoop(conn, send, key, clientID)
+		h.wsReadLoop(conn, send, key, clientID, bucket)
 	}()
 	defer func() {
 		// Stop both producers before closing send. The read loop may still be
@@ -479,8 +536,17 @@ func (h *Handler) wsWriteLoop(conn *websocket.Conn, send <-chan any) {
 	_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
-func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID string) {
+func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID string, bucket *tokenBucket) {
 	for {
+		// Exceeding the per-connection budget cuts the socket; the client's
+		// reconnect path resyncs from the authoritative state snapshot, so
+		// this is self-healing for legit users and a hard stop for floods.
+		if !bucket.allow() {
+			if h.logger != nil {
+				h.logger.Debug("ws message rate exceeded; closing connection", "key", key, "clientId", clientID)
+			}
+			return
+		}
 		var msg wsInbound
 		if err := conn.ReadJSON(&msg); err != nil {
 			return
@@ -852,6 +918,85 @@ func (b *broker) ping(key string) {
 		default:
 		}
 	}
+}
+
+// wsConnLimiter caps concurrent WebSocket connections globally and per client
+// IP. Connections are the expensive resource (two goroutines + buffers each),
+// so floods must be stopped before the upgrade handshake.
+type wsConnLimiter struct {
+	mu        sync.Mutex
+	global    int
+	perIP     map[string]int
+	maxGlobal int
+	maxPerIP  int
+}
+
+func newWSConnLimiter(maxGlobal, maxPerIP int) *wsConnLimiter {
+	return &wsConnLimiter{
+		perIP:     make(map[string]int),
+		maxGlobal: maxGlobal,
+		maxPerIP:  maxPerIP,
+	}
+}
+
+// acquire reserves one connection slot. Callers must release exactly once for
+// every successful acquire.
+func (l *wsConnLimiter) acquire(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.global >= l.maxGlobal {
+		return false
+	}
+	if l.perIP[ip] >= l.maxPerIP {
+		return false
+	}
+	l.global++
+	l.perIP[ip]++
+	return true
+}
+
+func (l *wsConnLimiter) release(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.global--
+	if l.global < 0 {
+		l.global = 0
+	}
+	if n := l.perIP[ip] - 1; n <= 0 {
+		delete(l.perIP, ip)
+	} else {
+		l.perIP[ip] = n
+	}
+}
+
+// tokenBucket is a per-connection inbound-message limiter. It is owned by the
+// single wsReadLoop goroutine and must not be shared.
+type tokenBucket struct {
+	tokens float64
+	last   time.Time
+	rate   float64
+	burst  float64
+}
+
+func newTokenBucket(rate, burst float64) *tokenBucket {
+	return &tokenBucket{tokens: burst, last: time.Now(), rate: rate, burst: burst}
+}
+
+// allow consumes one token if available. Tokens refill continuously at rate,
+// capped at burst, so idle connections accumulate a short burst budget.
+func (b *tokenBucket) allow() bool {
+	now := time.Now()
+	elapsed := now.Sub(b.last).Seconds()
+	b.tokens += elapsed * b.rate
+	if b.tokens > b.burst {
+		b.tokens = b.burst
+	}
+	b.last = now
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
 }
 
 func keyFromPagePath(path string) (string, error) {
