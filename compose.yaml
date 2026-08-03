@@ -7,8 +7,17 @@ services:
       - "8081:8080"
     environment:
       PORT: "8080"
-      # Admin password for upload + delete. Download uses a per-file password set at upload.
-      UPLOAD_PASSWORD: "change-me"
+      # Admin password for upload + delete. Download uses a per-file password
+      # set at upload. Override per deployment via a .env file next to this
+      # compose.yaml (docker compose reads it automatically):
+      #   UPLOAD_PASSWORD=your-secret
+      # The fallback below is a placeholder, NOT a real credential.
+      UPLOAD_PASSWORD: "${UPLOAD_PASSWORD:-change-me}"
+      # Trusted reverse-proxy CIDRs (comma-separated). Only connections from
+      # these addresses may set forwarded client IPs. Behind Cloudflare, put
+      # its official ranges in .env (https://www.cloudflare.com/ips-v4,
+      # ips-v6); empty (default) trusts no proxies.
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       FILE_DIR: "/data/files"
       TMPDIR: "/data/tmp"
     volumes:

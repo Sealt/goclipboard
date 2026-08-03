@@ -176,26 +176,33 @@ func TestClientIP(t *testing.T) {
 		name     string
 		resolver *IPResolver
 		remote   string
+		cfip     string
 		xff      string
 		xri      string
 		want     string
 	}{
-		{"no headers", trustNone, "192.168.1.1:1234", "", "", "192.168.1.1"},
-		{"xff ignored when peer untrusted", trustNone, "10.0.0.1:9999", "203.0.113.1", "", "10.0.0.1"},
-		{"xri ignored when peer untrusted", trustNone, "10.0.0.1:9999", "", "198.51.100.1", "10.0.0.1"},
-		{"nil resolver never trusts headers", nil, "10.0.0.1:9999", "203.0.113.1", "", "10.0.0.1"},
-		{"xff honored from trusted proxy", trustLocal, "127.0.0.1:9999", "203.0.113.1", "", "203.0.113.1"},
-		{"xff first entry wins", trustAll, "10.0.0.1:9999", "203.0.113.1, 198.51.100.1", "", "203.0.113.1"},
-		{"xri fallback", trustAll, "10.0.0.1:9999", "", "198.51.100.1", "198.51.100.1"},
-		{"garbage xff falls back to remote", trustAll, "10.0.0.1:9999", "not-an-ip", "", "10.0.0.1"},
-		{"ipv6 loopback remote", trustLocal, "[::1]:8080", "203.0.113.1", "", "203.0.113.1"},
-		{"ipv6 remote without headers", trustNone, "[::1]:8080", "", "", "::1"},
+		{"no headers", trustNone, "192.168.1.1:1234", "", "", "", "192.168.1.1"},
+		{"xff ignored when peer untrusted", trustNone, "10.0.0.1:9999", "", "203.0.113.1", "", "10.0.0.1"},
+		{"xri ignored when peer untrusted", trustNone, "10.0.0.1:9999", "", "", "198.51.100.1", "10.0.0.1"},
+		{"cf ip ignored when peer untrusted", trustNone, "10.0.0.1:9999", "203.0.113.9", "", "", "10.0.0.1"},
+		{"nil resolver never trusts headers", nil, "10.0.0.1:9999", "203.0.113.9", "203.0.113.1", "", "10.0.0.1"},
+		{"xff honored from trusted proxy", trustLocal, "127.0.0.1:9999", "", "203.0.113.1", "", "203.0.113.1"},
+		{"cf connecting ip wins over spoofable xff", trustAll, "10.0.0.1:9999", "203.0.113.9", "203.0.113.1, 198.51.100.1", "", "203.0.113.9"},
+		{"xff first entry wins", trustAll, "10.0.0.1:9999", "", "203.0.113.1, 198.51.100.1", "", "203.0.113.1"},
+		{"xri fallback", trustAll, "10.0.0.1:9999", "", "", "198.51.100.1", "198.51.100.1"},
+		{"garbage cf falls back to xff", trustAll, "10.0.0.1:9999", "not-an-ip", "203.0.113.1", "", "203.0.113.1"},
+		{"garbage xff falls back to remote", trustAll, "10.0.0.1:9999", "", "not-an-ip", "", "10.0.0.1"},
+		{"ipv6 loopback remote", trustLocal, "[::1]:8080", "", "203.0.113.1", "", "203.0.113.1"},
+		{"ipv6 remote without headers", trustNone, "[::1]:8080", "", "", "", "::1"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.RemoteAddr = tc.remote
+			if tc.cfip != "" {
+				req.Header.Set("CF-Connecting-IP", tc.cfip)
+			}
 			if tc.xff != "" {
 				req.Header.Set("X-Forwarded-For", tc.xff)
 			}
@@ -203,7 +210,7 @@ func TestClientIP(t *testing.T) {
 				req.Header.Set("X-Real-IP", tc.xri)
 			}
 			if got := tc.resolver.ClientIP(req); got != tc.want {
-				t.Fatalf("ClientIP = %q, want %q (remote=%q xff=%q xri=%q)", got, tc.want, tc.remote, tc.xff, tc.xri)
+				t.Fatalf("ClientIP = %q, want %q (remote=%q cfip=%q xff=%q xri=%q)", got, tc.want, tc.remote, tc.cfip, tc.xff, tc.xri)
 			}
 		})
 	}

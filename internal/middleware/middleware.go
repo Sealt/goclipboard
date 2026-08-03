@@ -15,11 +15,11 @@ import (
 
 // IPResolver decides which client IP is used for rate limiting and banning.
 //
-// Forwarded headers (X-Forwarded-For, X-Real-IP) are only honored when the
-// direct peer (RemoteAddr) is inside one of the configured trusted proxy
-// CIDRs. With no trusted proxies configured (the default), the client IP is
-// always the direct peer, so spoofed headers can neither bypass limits nor
-// get arbitrary victim IPs banned.
+// Forwarded headers (CF-Connecting-IP, X-Forwarded-For, X-Real-IP) are only
+// honored when the direct peer (RemoteAddr) is inside one of the configured
+// trusted proxy CIDRs. With no trusted proxies configured (the default), the
+// client IP is always the direct peer, so spoofed headers can neither bypass
+// limits nor get arbitrary victim IPs banned.
 type IPResolver struct {
 	trusted []*net.IPNet
 }
@@ -68,10 +68,20 @@ func (r *IPResolver) trusts(ip net.IP) bool {
 	return false
 }
 
-// forwardedClientIP extracts the first X-Forwarded-For entry, falling back to
-// X-Real-IP. Callers must only invoke this after verifying the direct peer is
-// a trusted proxy; values that do not parse as IPs are ignored.
+// forwardedClientIP extracts the client IP from forwarded headers. Callers
+// must only invoke this after verifying the direct peer is a trusted proxy.
+//
+// Precedence: CF-Connecting-IP (Cloudflare sets it to the true visitor IP;
+// it *appends* the visitor IP to X-Forwarded-For rather than overwriting the
+// chain, so the first XFF entry may be client-supplied and spoofable), then
+// the first X-Forwarded-For entry, then X-Real-IP. Values that do not parse
+// as IPs are ignored.
 func forwardedClientIP(req *http.Request) string {
+	if cf := strings.TrimSpace(req.Header.Get("CF-Connecting-IP")); cf != "" {
+		if ip := net.ParseIP(cf); ip != nil {
+			return ip.String()
+		}
+	}
 	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
 		if idx := strings.Index(xff, ","); idx != -1 {
 			xff = xff[:idx]

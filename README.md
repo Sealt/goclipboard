@@ -150,7 +150,7 @@ Docker 部署时容器健康检查直接调用二进制自身（scratch 镜像�
 | `MAX_MEMORY_MB`         | `256`     | 内容 + CRDT 原子的内存预算，超出返回 `507`                  |
 | `UPLOAD_PASSWORD`       | _(空)_    | 文件上传/删除的管理员密码；留空停用文件功能                  |
 | `FILE_DIR`              | `data/files` | 上传文件的磁盘根目录（`{FILE_DIR}/{room}/{id}.bin`）     |
-| `TRUSTED_PROXIES`       | _(空)_    | 可信反向代理 CIDR 列表（逗号分隔，如 `127.0.0.1/32,10.0.0.0/8`）。为空时**不信任任何转发头**（`X-Forwarded-For`/`X-Real-IP` 一律忽略，限流/黑名单按直连 IP 计算），防止伪造头绕过限流或误封他人 |
+| `TRUSTED_PROXIES`       | _(空)_    | 可信反向代理 CIDR 列表（逗号分隔，如 `127.0.0.1/32,10.0.0.0/8`）。为空时**不信任任何转发头**（`CF-Connecting-IP`/`X-Forwarded-For`/`X-Real-IP` 一律忽略，限流/黑名单按直连 IP 计算），防止伪造头绕过限流或误封他人。Cloudflare 部署请填入其官方 IP 段（https://www.cloudflare.com/ips-v4、ips-v6），并优先使用 `CF-Connecting-IP`（Cloudflare 对 `X-Forwarded-For` 是追加而非覆写，链首可能被客户端伪造） |
 | `MAX_WS_CONNS`          | `512`     | WebSocket 全局并发连接上限，超出返回 `503`                  |
 | `MAX_WS_CONNS_PER_IP`   | `32`      | 单 IP 的 WebSocket 并发连接上限                             |
 | `WS_MSG_RATE`           | `50`      | 单连接入站消息令牌速率（条/秒）；超限断开连接（客户端会自动重连并同步） |
@@ -158,7 +158,7 @@ Docker 部署时容器健康检查直接调用二进制自身（scratch 镜像�
 
 运维默认值：限流 10 req/s（burst 20）、自适应黑名单（硬阈值 5、扫描阈值 10、软阈值 30、窗口 30 s、硬封禁 30 分钟、软封禁 5 分钟；400/405/413 属软错误 —— 客户端 bug 或密码手滑不会把整个 NAT 封死，414 与扫描探测走硬封禁）、每分钟清理一轮、优雅停机 10 秒。WebSocket 通道有连接数上限与单连接消息限速（默认值对正常多人编辑留有充足余量：客户端打字约 17 msg/s + 光标约 13 msg/s）。
 
-> 部署在反向代理后面时，请把代理地址加入 `TRUSTED_PROXIES`，并让代理**覆写**（而非追加）`X-Forwarded-For`（nginx 示例：`proxy_set_header X-Forwarded-For $remote_addr;`）。
+> 部署在反向代理后面时，请把代理地址加入 `TRUSTED_PROXIES`，并让代理**覆写**（而非追加）`X-Forwarded-For`（nginx 示例：`proxy_set_header X-Forwarded-For $remote_addr;`）。Cloudflare 无需额外配置：其 `CF-Connecting-IP` 头部会被优先采用。部署专属值（`UPLOAD_PASSWORD`、`TRUSTED_PROXIES`）建议写在 compose.yaml 同目录的 `.env` 文件中（docker compose 自动读取，也不会进入 git）。
 
 ## 🐳 Docker
 
