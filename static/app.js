@@ -3,12 +3,7 @@
   var apiURL = "/api/clipboard/" + encodeURIComponent(key);
   var filesAPIURL = apiURL + "/files";
   var settingsAPIURL = apiURL + "/settings";
-  // ?view=true opens the room in read-only mode (server-enforced). Legacy
-  // view links with a view key still work; the client treats any ?view= as
-  // read-only and passes the raw value through to the WebSocket.
   var urlParams = new URLSearchParams(window.location.search || "");
-  var VIEW_KEY_PARAM = urlParams.get("view") || "";
-  var READ_ONLY = !!VIEW_KEY_PARAM;
   // ?mode=md | ?mode=plain — share links can default the view on open.
   var MODE_PARAM = (urlParams.get("mode") || "").toLowerCase();
   var wsURL =
@@ -16,8 +11,7 @@
     location.host +
     "/api/clipboard/" +
     encodeURIComponent(key) +
-    "/ws" +
-    (READ_ONLY ? "?view=" + encodeURIComponent(VIEW_KEY_PARAM) : "");
+    "/ws";
   var ADMIN_PASSWORD_KEY = "goclipboard:adminPassword";
   var FILE_PASSWORD_KEY = "goclipboard:filePassword";
   var THEME_KEY = "goclipboard:theme";
@@ -100,7 +94,6 @@
     "已删除": "Deleted",
     "删除失败": "Delete failed",
     "离线": "offline",
-    "只读模式": "Read-only",
     "撤销": "Undo",
     "重做": "Redo",
     "Markdown 预览": "Markdown preview",
@@ -236,11 +229,6 @@
     var ph = document.querySelectorAll("[data-i18n-placeholder]");
     for (var j = 0; j < ph.length; j++) {
       ph[j].placeholder = t(ph[j].getAttribute("data-i18n-placeholder"));
-    }
-    if (readOnlyMode) {
-      // The edit hint ("paste or type…") is misleading on a read-only link.
-      var ro = document.querySelectorAll("[data-i18n-placeholder]");
-      for (var jj = 0; jj < ro.length; jj++) ro[jj].removeAttribute("placeholder");
     }
     var ar = document.querySelectorAll("[data-i18n-aria]");
     for (var k = 0; k < ar.length; k++) {
@@ -468,7 +456,6 @@
   var langBtn = document.getElementById("langBtn");
   var previewPane = document.getElementById("previewPane");
   var previewBody = document.getElementById("previewBody");
-  var readonlyBanner = document.getElementById("readonlyBanner");
   var shareModal = document.getElementById("shareModal");
   var shareQrWrap = document.getElementById("shareQrWrap");
   var shareQrNote = document.getElementById("shareQrNote");
@@ -551,8 +538,6 @@
   var fileUploadEnabled = false;
   var roomTitleClickCount = 0;
   var roomTitleClickTimer = 0;
-  // Read-only (view link) mode
-  var readOnlyMode = READ_ONLY;
   // Undo / redo stacks: entries are { ops, at } where del ops carry
   // { after, ch } captured from the doc so redo can revive via fresh ids.
   var undoStack = [];
@@ -576,16 +561,6 @@
   // ?mode=plain (or absent) opens as plain text.
   if (MODE_PARAM === "md" || MODE_PARAM === "markdown") {
     togglePreview();
-  }
-  if (readOnlyMode) {
-    content.readOnly = true;
-    if (readonlyBanner) readonlyBanner.hidden = false;
-    var ttlField = document.querySelector(".ttl-field");
-    if (ttlField) ttlField.hidden = true;
-    if (undoBtn) undoBtn.hidden = true;
-    if (redoBtn) redoBtn.hidden = true;
-    if (historyBtn) historyBtn.hidden = true;
-    if (shareBtn) shareBtn.hidden = true;
   }
   content.addEventListener("input", onInput);
   content.addEventListener("compositionstart", onCompositionStart);
@@ -821,7 +796,7 @@
   }
 
   function undo() {
-    if (readOnlyMode || !undoStack.length) return;
+    if (!undoStack.length) return;
     var entry = undoStack.pop();
     var ops = inverseOps(entry.ops);
     if (!ops.length) {
@@ -845,7 +820,7 @@
   }
 
   function redo() {
-    if (readOnlyMode || !redoStack.length) return;
+    if (!redoStack.length) return;
     var entry = redoStack.pop();
     var ops = inverseOps(entry.ops); // redo = inverse of the undo batch
     if (!ops.length) {
@@ -869,8 +844,8 @@
   }
 
   function updateUndoButtons() {
-    if (undoBtn) undoBtn.disabled = readOnlyMode || undoStack.length === 0;
-    if (redoBtn) redoBtn.disabled = readOnlyMode || redoStack.length === 0;
+    if (undoBtn) undoBtn.disabled = undoStack.length === 0;
+    if (redoBtn) redoBtn.disabled = redoStack.length === 0;
   }
 
   function clearUndoHistory() {
@@ -960,7 +935,6 @@
   // Manual archive only — automatic checkpoints are recorded server-side
   // after content mutations (shared across every browser on the room).
   function captureHistoryManual() {
-    if (readOnlyMode) return;
     if (!doc.materialize()) {
       showToast(t("暂无可存档内容"));
       return;
@@ -999,7 +973,6 @@
   }
 
   function clearHistoryTrail() {
-    if (readOnlyMode) return;
     if (!historySnapshots.length) {
       showToast(t("暂无历史版本"));
       return;
@@ -1061,7 +1034,7 @@
     if (historyPreviewMeta) historyPreviewMeta.textContent = parts.join(" · ");
     if (historyPreviewBody) historyPreviewBody.textContent = snap.text || "";
     if (historyPreviewRestore) {
-      historyPreviewRestore.disabled = isCurrent || readOnlyMode;
+      historyPreviewRestore.disabled = isCurrent;
       historyPreviewRestore.hidden = false;
     }
     historyPreviewModal.hidden = false;
@@ -1139,7 +1112,7 @@
         restore.type = "button";
         restore.className = "btn-sm" + (isCurrent ? "" : " primary");
         restore.textContent = t("恢复");
-        restore.disabled = isCurrent || readOnlyMode;
+        restore.disabled = isCurrent;
         restore.addEventListener("click", function (e) {
           e.stopPropagation();
           restoreSnapshot(idx);
@@ -1193,8 +1166,7 @@
   // --- Edit password (room lock) ---------------------------------------------
   // When a room is locked, every write must present this password. It lives
   // only in the locking browser's localStorage — the server never sends it
-  // back — so view-link holders who strip ?view=true still cannot edit.
-  // PasswordScope ("" | "edit" | "view") decides what the password gates:
+  // back. PasswordScope ("" | "edit" | "view") decides what the password gates:
   // "edit" = writes only (legacy), "view" = reads and writes.
   var EDIT_PASS_STORE_KEY = "goclipboard:editPass:" + key;
   var VIEW_PASS_STORE_KEY = "goclipboard:viewPass:" + key;
@@ -1474,7 +1446,7 @@
   }
 
   function renderShareUrls() {
-    if (!shareModal || readOnlyMode) return;
+    if (!shareModal) return;
     // A single room link: the URL path is the room key, mode just picks the
     // default view. Access control lives in the room password, not the URL.
     if (shareRoomUrl) shareRoomUrl.textContent = shareUrlWithMode(roomEditUrl());
@@ -1519,7 +1491,7 @@
   }
 
   function openShare() {
-    if (!shareModal || readOnlyMode) return;
+    if (!shareModal) return;
     renderShareUrls();
     shareModal.hidden = false;
   }
@@ -1966,7 +1938,7 @@
       requestViewPassword();
       return;
     }
-    if (content.readOnly && !readOnlyMode) content.readOnly = false;
+    if (content.readOnly) content.readOnly = false;
     var localText = content.value;
     var previousSyncedText = lastSyncedText;
     var hadPending = pendingOps.length > 0;
@@ -3574,18 +3546,18 @@
   function setupFileDropPaste() {
     // Drag files onto the page / editor.
     document.addEventListener("dragenter", function (e) {
-      if (readOnlyMode || !hasFiles(e)) return;
+      if (!hasFiles(e)) return;
       e.preventDefault();
       dragDepth++;
       if (appRoot) appRoot.classList.add("is-file-dragover");
     });
     document.addEventListener("dragover", function (e) {
-      if (readOnlyMode || !hasFiles(e)) return;
+      if (!hasFiles(e)) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
     });
     document.addEventListener("dragleave", function (e) {
-      if (readOnlyMode || (!hasFiles(e) && dragDepth === 0)) return;
+      if (!hasFiles(e) && dragDepth === 0) return;
       e.preventDefault();
       dragDepth = Math.max(0, dragDepth - 1);
       if (dragDepth === 0 && appRoot) {
@@ -3595,7 +3567,7 @@
     document.addEventListener("drop", function (e) {
       dragDepth = 0;
       if (appRoot) appRoot.classList.remove("is-file-dragover");
-      if (readOnlyMode || !hasFiles(e)) return;
+      if (!hasFiles(e)) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
@@ -3606,7 +3578,6 @@
     // Paste files (screenshot / Finder copy). Pure file paste always uploads;
     // mixed text+file paste only uploads when not focused on editor text intent.
     document.addEventListener("paste", function (e) {
-      if (readOnlyMode) return;
       var items = e.clipboardData && e.clipboardData.items;
       if (!items || !items.length) return;
       var files = [];
@@ -3669,7 +3640,6 @@
   function setupRoomTitleToggle() {
     if (!roomTitle) return;
     roomTitle.addEventListener("click", function () {
-      if (readOnlyMode) return;
       roomTitleClickCount++;
       window.clearTimeout(roomTitleClickTimer);
       roomTitleClickTimer = window.setTimeout(function () {
@@ -3683,7 +3653,6 @@
   }
 
   function toggleRoomFileUpload() {
-    if (readOnlyMode) return;
     var next = !fileUploadEnabled;
     var action = next ? t("开启") : t("关闭");
     askPassword({
@@ -3857,7 +3826,7 @@
       });
 
       actions.appendChild(dl);
-      if (!readOnlyMode) actions.appendChild(del);
+      actions.appendChild(del);
       li.appendChild(meta);
       li.appendChild(actions);
       fileList.appendChild(li);
@@ -4040,7 +4009,6 @@
   }
 
   function promptUploadFiles(fileListLike) {
-    if (readOnlyMode) return;
     var files = Array.prototype.slice.call(fileListLike || []).filter(Boolean);
     if (!files.length) return;
 
@@ -4331,7 +4299,6 @@
   }
 
   function deleteFile(id, name) {
-    if (readOnlyMode) return;
     // Always prompt for admin password — never silent delete with cached password only.
     askPassword({
       title: t("删除文件"),

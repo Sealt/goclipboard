@@ -73,7 +73,6 @@ Usage:
       -ttl       lifetime: 30m, 2h, 1d, or plain seconds (default 1h)
       -key       room key to write; server generates one when omitted
       -password  edit password: unlocks locked rooms; on unlocked rooms claim-locks atomically with the write
-      -v         also print the read-only view link (stderr)
   goclipboard pull [-url U] [-o file] [-password P] <url|key>
       Print room content to stdout (or write to -o file).
       -password  room password (required for view-protected rooms)
@@ -86,7 +85,6 @@ type pushFlags struct {
 	base string
 	key  string
 	ttl  string
-	view bool
 }
 
 func runPush(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -95,7 +93,6 @@ func runPush(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	base := fs.String("url", "", "server base URL (env GOCLIPBOARD_URL)")
 	key := fs.String("key", "", "room key to write (default: server creates one)")
 	ttl := fs.String("ttl", "1h", "lifetime: 30m, 2h, 1d or plain seconds")
-	view := fs.Bool("v", false, "also print the read-only view link")
 	password := fs.String("password", "", "edit password for locked rooms")
 	fs.Usage = func() { printUsage(stderr) }
 	if err := fs.Parse(args); err != nil {
@@ -146,9 +143,6 @@ func runPush(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return ExitError
 		}
 		respURL = baseURL + "/" + *key
-		if *view {
-			fmt.Fprintf(stderr, "view: %s?view=true\n", respURL)
-		}
 	} else {
 		u := baseURL + "/api/clipboard"
 		code, data, err := doJSON(http.MethodPost, u, body)
@@ -161,17 +155,13 @@ func runPush(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return ExitError
 		}
 		var created struct {
-			Key     string `json:"key"`
-			ViewKey string `json:"viewKey"`
+			Key string `json:"key"`
 		}
 		if err := json.Unmarshal(data, &created); err != nil || created.Key == "" {
 			fmt.Fprintf(stderr, "goclipboard push: unexpected server response: %s\n", data)
 			return ExitError
 		}
 		respURL = baseURL + "/" + created.Key
-		if *view {
-			fmt.Fprintf(stderr, "view: %s?view=true\n", respURL)
-		}
 	}
 	fmt.Fprintln(stdout, respURL)
 	return ExitOK
@@ -272,8 +262,8 @@ func baseURLOf(flagValue string) string {
 }
 
 // resolveTarget turns a bare room key or a full URL into a GET-able API URL.
-// Page URLs (https://host/{key}) and view URLs (…?view=…) are translated to
-// the API path; direct /api/clipboard/{key} URLs pass through unchanged.
+// Page URLs (https://host/{key}) are translated to the API path; direct
+// /api/clipboard/{key} URLs pass through unchanged.
 func resolveTarget(baseURL, ref string) string {
 	ref = strings.TrimSpace(ref)
 	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {

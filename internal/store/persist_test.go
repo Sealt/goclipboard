@@ -12,7 +12,7 @@ import (
 )
 
 // Round-trip: rooms survive a store restart via disk snapshots, keeping
-// content, version, generation and view key. Expired rooms are dropped and
+// content, version and generation. Expired rooms are dropped and
 // deleted rooms leave no snapshot behind.
 
 func TestPersistenceRoundTrip(t *testing.T) {
@@ -26,10 +26,6 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	item, err := s1.Save("persistroom", "你好 world", time.Hour, "alice")
 	if err != nil {
 		t.Fatalf("save: %v", err)
-	}
-	viewKey := item.ViewKey
-	if viewKey == "" {
-		t.Fatal("no view key generated")
 	}
 	gen := item.Generation
 	ver := item.Version
@@ -55,9 +51,9 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if got.Content != "你好 world" {
 		t.Fatalf("restored content = %q", got.Content)
 	}
-	if got.Version != ver || got.Generation != gen || got.ViewKey != viewKey {
-		t.Fatalf("restored meta mismatch: version=%d gen=%d view=%q (want %d/%d/%q)",
-			got.Version, got.Generation, got.ViewKey, ver, gen, viewKey)
+	if got.Version != ver || got.Generation != gen {
+		t.Fatalf("restored meta mismatch: version=%d gen=%d (want %d/%d)",
+			got.Version, got.Generation, ver, gen)
 	}
 	if got.Doc == nil || got.Doc.Materialize() != "你好 world" {
 		t.Fatal("restored doc does not materialize to saved content")
@@ -118,12 +114,9 @@ func TestPersistenceSurvivesOpBatch(t *testing.T) {
 	)
 	// Ops path (WS) must also persist: create + insert.
 	ops := []crdt.Op{{Op: crdt.OpInsert, ID: "site:1", After: "", Ch: "哈"}}
-	item, _, err := s1.ApplyOps("oproom", ops, time.Hour, "site", Auth{})
+	_, _, err := s1.ApplyOps("oproom", ops, time.Hour, "site", Auth{})
 	if err != nil {
 		t.Fatalf("apply ops: %v", err)
-	}
-	if item.ViewKey == "" {
-		t.Fatal("no view key on op-created room")
 	}
 	s1.Close()
 
@@ -136,8 +129,8 @@ func TestPersistenceSurvivesOpBatch(t *testing.T) {
 	if !ok {
 		t.Fatal("op-created room not restored")
 	}
-	if got.Content != "哈" || got.ViewKey != item.ViewKey {
-		t.Fatalf("restored op room: content=%q view=%q", got.Content, got.ViewKey)
+	if got.Content != "哈" {
+		t.Fatalf("restored op room: content=%q", got.Content)
 	}
 }
 
@@ -147,7 +140,7 @@ func TestPersistenceMigratesLegacyEditPassword(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 
-	legacy := `{"key":"legacy","viewKey":"vk1","editPassword":"oldpw","content":"hi",
+	legacy := `{"key":"legacy","editPassword":"oldpw","content":"hi",
 		"ttlSeconds":3600,"expiresAt":` + fmt.Sprint(now.Add(time.Hour).Unix()) + `,
 		"version":1,"generation":1,"updatedAt":0,"updatedBy":"a","items":[]}`
 	if err := os.WriteFile(filepath.Join(dir, "legacy.json"), []byte(legacy), 0o600); err != nil {

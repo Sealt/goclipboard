@@ -173,7 +173,7 @@ body {
   align-self: flex-start;
 }
 
-/* Room number + read-only badge on one line */
+/* Room number row */
 .path-row {
   display: flex;
   align-items: center;
@@ -1506,37 +1506,6 @@ button.btn-sm {
   font-size: 13px;
   letter-spacing: 0;
   font-weight: 650;
-}
-
-/* ── Read-only badge (right of the room number) ───────── */
-
-.readonly-banner {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-  padding: 1px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.6;
-  font-family: var(--sans);
-  white-space: nowrap;
-  color: var(--warn);
-}
-
-.readonly-banner[hidden] {
-  display: none;
-}
-
-.readonly-banner svg {
-  width: 12px;
-  height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  flex: 0 0 auto;
 }
 
 /* ── Markdown preview ────────────────────────────────── */

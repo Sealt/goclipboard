@@ -32,7 +32,6 @@ GoClipboard 给你一个 **URL**：把内容贴进房间，分享链接，所有
 - 🔗 **URL 即分享** —— 每个剪贴板随机生成 key，TTL 按分钟/小时/天设定，到期自动清理
 - 👥 **实时协作编辑** —— 基于字符级 **RGA CRDT**，通过 WebSocket 同步：多人并发编辑自动合并，互不覆盖，弱网也不怕
 - 🖱️ **远程光标与选区** —— 实时看到协作者的输入位置，每人一个专属颜色
-- 🔒 **只读模式** —— 链接手动加 `?view=true` 即为只读（服务端强制拒绝一切写入 op），适合需要"只读分享"的场景；分享面板默认只给房间链接，访问控制交给房间密码
 - 🔑 **房间密码** —— 手动输入或自动生成；选择验证范围：**仅编辑需密码**（查看公开），或**查看和编辑都需密码**（未解锁看不到任何内容）
 - ↩️ **撤销 / 重做** —— 基于 CRDT 逆操作的协作式撤销（Ctrl+Z / Ctrl+Shift+Z），不受他人并发编辑干扰
 - 🕘 **版本历史** —— 服务端共享存档（编辑自动记录，最多 20 条），可预览/恢复/清空；有房间密码时查看历史也需密码；历史会保留已删除内容，分享前请清空或上锁
@@ -74,7 +73,6 @@ docker compose up -d          # 用 Docker 自托管
 ```sh
 echo "hello" | goclipboard push            # → 打印房间链接
 goclipboard push -ttl 2h notes.txt         # 读文件、2 小时后过期
-goclipboard push -v notes.txt              # 顺带打印只读链接
 goclipboard push -password 'pw' -key AbC123 notes.txt  # 写入已锁定房间
 goclipboard pull https://host/AbC123       # 拉取内容到 stdout
 goclipboard pull -o out.txt AbC123         # 写入文件
@@ -101,8 +99,8 @@ goclipboard pull -password 'pw' AbC123     # 查看范围密码保护的房间
 ### 剪贴板（REST）
 
 ```http
-POST   /api/clipboard                  # 创建房间（key 由服务端生成）→ 返回含 key/viewKey
-GET    /api/clipboard/{key}            # 读取内容 + 版本 + viewKey
+POST   /api/clipboard                  # 创建房间（key 由服务端生成）
+GET    /api/clipboard/{key}            # 读取内容 + 版本
 PUT    /api/clipboard/{key}            # 整篇替换
 DELETE /api/clipboard/{key}            # 删除
 GET    /api/clipboard/{key}/history    # 版本历史（有房间密码时需密码）
@@ -116,7 +114,7 @@ curl -X PUT localhost:8080/api/clipboard/AbC123 \
   -d '{"content":"hello 世界","ttlSeconds":3600,"clientId":"my-site"}'
 ```
 
-响应中的 `viewKey` 用于构造只读链接 `/{key}?view={viewKey}`：带该参数的页面处于只读模式，WebSocket 会话也只读（服务端拒绝一切写入 op）。
+响应即房间内容与元数据（`content` / `ttlSeconds` / `expiresAt` / `version` / `passwordScope` 等）。
 
 `PUT` 支持可选的 `baseVersion` 乐观并发：过期覆盖会被拒绝并返回 `409`（附当前状态），离线/REST 客户端可以据此合并而不是盲目覆盖。
 
@@ -149,15 +147,13 @@ PUT /api/clipboard/{key}/password          # 设置/修改/解除
 
 ```http
 GET /api/clipboard/{key}/ws?clientId={id}
-# 只读会话：
-GET /api/clipboard/{key}/ws?clientId={id}&view={viewKey}
 ```
 
 **服务端 → 客户端**
 
 | type     | 含义                                              |
 |----------|---------------------------------------------------|
-| `state`  | 完整 CRDT 快照：`items`、线性化 `content`、版本号、`viewKey` |
+| `state`  | 完整 CRDT 快照：`items`、线性化 `content`、版本号 |
 | `ops`    | 已应用的 op 批次 + `version` / `content`          |
 | `cursor` | 远程光标 / 选区（码点偏移）                       |
 | `files`  | 文件列表元数据（上传/删除/过期后推送）            |
@@ -244,7 +240,7 @@ make build        # 编译单个静态二进制
 main.go               入口：配置、CLI 分发（push/pull）、中间件、优雅停机
 internal/crdt/        RGA 序列 CRDT（插入 / 删除 / 物化 / 快照）
 internal/store/       内存房间存储 + 磁盘文件存储、可选持久化、TTL 清理
-internal/handler/     HTTP + WebSocket 路由、文件上传下载、只读会话
+internal/handler/     HTTP + WebSocket 路由、文件上传下载
 internal/middleware/  限流、黑名单、安全头、请求日志
 internal/cli/         push/pull 客户端模式（同一二进制）
 static/               前端：app.js + crdt.js（原生 JS，无构建步骤；vendor/ 为 MIT 单文件库）

@@ -32,7 +32,6 @@ GoClipboard gives you a **URL**. Paste into the room, share the link, and the co
 - 🔗 **URL-first sharing** — every clipboard gets a random key; set a TTL in minutes, hours, or days and it cleans itself up
 - 👥 **Real-time collaborative editing** — character-level **RGA CRDT** over WebSocket: concurrent edits merge, never clobber each other, even on flaky networks
 - 🖱️ **Remote carets & selections** — see exactly where your teammates are typing, each in their own color
-- 🔒 **Read-only mode** — append `?view=true` to a room link for a read-only session (the server hard-rejects writes); the share dialog now hands out a single room link and leaves access control to the room password
 - 🔑 **Room passwords** — type your own or auto-generate; pick the scope: **edit only** (viewing stays open) or **view** (the password is required to see any content at all)
 - ↩️ **Undo / redo** — collaborative undo (Ctrl+Z / Ctrl+Shift+Z) built on CRDT inverse ops, immune to concurrent edits
 - 🕘 **Version history** — server-side trail (auto-captured, max 20); preview / restore / clear; password-gated when the room is locked; history retains deleted text — clear or lock before sharing secrets
@@ -74,7 +73,6 @@ The same binary is both server and client (`-url` flag or `GOCLIPBOARD_URL` env;
 ```sh
 echo "hello" | goclipboard push            # → prints the room URL
 goclipboard push -ttl 2h notes.txt         # read a file, expire in 2 hours
-goclipboard push -v notes.txt              # also print the read-only link
 goclipboard push -password 'pw' -key AbC123 notes.txt  # write to a locked room
 goclipboard pull https://host/AbC123       # print room content to stdout
 goclipboard pull -o out.txt AbC123         # write to a file
@@ -101,8 +99,8 @@ This is also why weak networks behave: ops are idempotent, order-independent, an
 ### Clipboard (REST)
 
 ```http
-POST   /api/clipboard                  # create a room (server-generated key) → returns key + viewKey
-GET    /api/clipboard/{key}            # fetch content + version + viewKey
+POST   /api/clipboard                  # create a room (server-generated key)
+GET    /api/clipboard/{key}            # fetch content + version
 PUT    /api/clipboard/{key}            # full replace
 DELETE /api/clipboard/{key}            # delete
 GET    /api/clipboard/{key}/history    # version history (password required when room is locked)
@@ -116,7 +114,7 @@ curl -X PUT localhost:8080/api/clipboard/AbC123 \
   -d '{"content":"hello 世界","ttlSeconds":3600,"clientId":"my-site"}'
 ```
 
-Read-only mode uses `/{key}?view=true` (the share panel's single room link can add `?mode=…`; append `view=true` manually when you need a read-only open). Legacy links with a real `viewKey` (`/{key}?view={viewKey}`) are still accepted by the server. Pages opened with either form run in read-only mode, and the WebSocket session is read-only too (the server rejects every write op). Access control for private content is handled by the room password (view scope), not by secret view links.
+The response is the room's content and metadata (`content` / `ttlSeconds` / `expiresAt` / `version` / `passwordScope`, etc.).
 
 `PUT` accepts an optional `baseVersion` for optimistic concurrency — a stale overwrite is rejected with `409` plus current state, so offline/REST clients can merge instead of clobbering.
 
@@ -127,7 +125,7 @@ The share dialog sets a room password (**type your own or regenerate**) and pick
 - **Edit** (default) — content viewing stays open; editing (writes, delete, password changes, **reading/clearing history**) requires the password
 - **View** — viewing *and* editing require the password: unauthenticated sessions receive no content, and the file list / downloads / uploads / deletes are protected too
 
-The password lives only with whoever set it — the server never returns it (responses carry only `passwordSet` / `passwordScope`), so holders of a read-only `?view=true` link can't recover it. On an unlocked room, any link holder can set a password and claim the lock — set one before sharing if that matters.
+The password lives only with whoever set it — the server never returns it (responses carry only `passwordSet` / `passwordScope`). On an unlocked room, any link holder can set a password and claim the lock — set one before sharing if that matters.
 
 ```http
 GET /api/clipboard/{key}/password          # → {"passwordSet":true,"scope":"view"}
@@ -150,15 +148,13 @@ Up to 20 server-side content snapshots per room (auto-captured with a 5s throttl
 
 ```http
 GET /api/clipboard/{key}/ws?clientId={id}
-# read-only session (?view=true, or legacy ?view={viewKey}):
-GET /api/clipboard/{key}/ws?clientId={id}&view=true
 ```
 
 **Server → client**
 
-| type     | meaning                                                    |
-|----------|------------------------------------------------------------|
-| `state`  | Full CRDT snapshot: `items`, linearized `content`, version, `viewKey` |
+| type     | meaning                                             |
+|----------|-----------------------------------------------------|
+| `state`  | Full CRDT snapshot: `items`, linearized `content`, version |
 | `ops`    | Applied op batch + `version` / `content`                   |
 | `cursor` | Remote carets / selections (code-point offsets)            |
 | `files`  | File list metadata after upload/delete/expiry              |
@@ -232,7 +228,7 @@ The codebase is small and deliberately boring:
 main.go                wiring: config, CLI dispatch (push/pull), middleware, shutdown
 internal/crdt/         RGA sequence CRDT (insert / delete / materialize / snapshot)
 internal/store/        in-memory room store + on-disk file store, optional persistence, TTL cleanup
-internal/handler/      HTTP + WebSocket routes, file upload/download, read-only sessions
+internal/handler/      HTTP + WebSocket routes, file upload/download
 internal/middleware/   rate limit, blocklist, security headers, request logging
 internal/cli/          push/pull client mode (same binary)
 static/                frontend: app.js + crdt.js (vanilla JS, no build step; vendor/ = MIT single-file libs)

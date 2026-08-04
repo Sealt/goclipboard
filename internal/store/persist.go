@@ -18,7 +18,7 @@ import (
 // batch; a stale write is detected and retried.
 //
 // The snapshot stores the full CRDT item set, so restored rooms keep their
-// exact structure (ids, tombstones, view keys) — peers reconnect and merge as
+// exact structure (ids, tombstones) — peers reconnect and merge as
 // if the server never restarted.
 
 // DefaultPersistDir is the on-disk root used when PERSIST_DIR is unset.
@@ -30,7 +30,6 @@ const persistFlushInterval = 250 * time.Millisecond
 // roomSnapshot is the on-disk representation of one live room.
 type roomSnapshot struct {
 	Key           string `json:"key"`
-	ViewKey       string `json:"viewKey,omitempty"`
 	PasswordHash  string `json:"passwordHash,omitempty"`
 	PasswordSalt  string `json:"passwordSalt,omitempty"`
 	PasswordScope string `json:"passwordScope,omitempty"`
@@ -163,7 +162,6 @@ func (s *Store) writeSnapshot(key string) {
 	}
 	snap := roomSnapshot{
 		Key:           key,
-		ViewKey:       item.ViewKey,
 		PasswordHash:  item.PasswordHash,
 		PasswordSalt:  item.PasswordSalt,
 		PasswordScope: item.PasswordScope,
@@ -309,7 +307,6 @@ func (s *Store) loadPersisted() {
 			ExpiresAt:     expiresAt,
 			Version:       snap.Version,
 			Generation:    snap.Generation,
-			ViewKey:       snap.ViewKey,
 			PasswordHash:  passHash,
 			PasswordSalt:  passSalt,
 			PasswordScope: scope,

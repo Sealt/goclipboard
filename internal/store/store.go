@@ -1,9 +1,7 @@
 package store
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -55,15 +53,6 @@ type Auth struct {
 	Cred          string
 	ClaimPassword string
 	ClaimScope    string
-}
-
-// newViewKey returns a random read-only access key for a room.
-func newViewKey() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return hex.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
-	}
-	return hex.EncodeToString(b[:])
 }
 
 type Store struct {
@@ -263,11 +252,6 @@ func (s *Store) SaveWithBase(key, content string, ttl time.Duration, updatedBy s
 		version = current.Version + 1
 	}
 
-	viewKey := current.ViewKey
-	if !exists || viewKey == "" {
-		viewKey = newViewKey()
-	}
-
 	item := model.Clipboard{
 		Doc:           doc,
 		Content:       content,
@@ -275,7 +259,6 @@ func (s *Store) SaveWithBase(key, content string, ttl time.Duration, updatedBy s
 		ExpiresAt:     now.Add(ttl),
 		Version:       version,
 		Generation:    generation,
-		ViewKey:       viewKey,
 		PasswordHash:  current.PasswordHash,
 		PasswordSalt:  current.PasswordSalt,
 		PasswordScope: current.PasswordScope,
@@ -412,7 +395,6 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 				ExpiresAt:  now.Add(curTTL),
 				Version:    1,
 				Generation: generation,
-				ViewKey:    newViewKey(),
 				UpdatedAt:  now,
 				UpdatedBy:  updatedBy,
 			}
@@ -437,11 +419,6 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		return cloneClipboard(current), false, nil
 	}
 
-	viewKey := current.ViewKey
-	if !exists || viewKey == "" {
-		viewKey = newViewKey()
-	}
-
 	item := model.Clipboard{
 		Doc:           working,
 		Content:       content,
@@ -449,7 +426,6 @@ func (s *Store) ApplyOps(key string, ops []crdt.Op, ttl time.Duration, updatedBy
 		ExpiresAt:     now.Add(curTTL),
 		Version:       version + 1,
 		Generation:    generation,
-		ViewKey:       viewKey,
 		PasswordHash:  current.PasswordHash,
 		PasswordSalt:  current.PasswordSalt,
 		PasswordScope: current.PasswordScope,

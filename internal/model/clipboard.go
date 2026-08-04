@@ -19,15 +19,6 @@ type Clipboard struct {
 	// expired/deleted room is created again, so version 1 from a new room cannot
 	// be mistaken for version 1 from an older incarnation.
 	Generation int64
-	// ViewKey is the read-only access key for the room, distinct from the
-	// edit key (the room key in the URL path). It is generated once when the
-	// room is created and never changes. View links are {key}?view=true
-	// (legacy {key}?view={ViewKey} links are still honored); WebSocket
-	// sessions presenting a valid view flag are read-only (ops are rejected
-	// server-side). Note: the view URL contains the room key in its path, so
-	// this guards against accidental edits, not against a determined holder
-	// of the view link.
-	ViewKey string
 	// PasswordHash + PasswordSalt store a password KDF hash (bcrypt) and a
 	// random salt used as a non-secret session credential (never the
 	// plaintext). Legacy snapshots may still carry SHA-256(salt:password)
@@ -82,7 +73,6 @@ type ClipboardResponse struct {
 	ExpiresAt  string `json:"expiresAt,omitempty"`
 	Version    int64  `json:"version"`
 	Generation int64  `json:"generation,omitempty"`
-	ViewKey    string `json:"viewKey,omitempty"`
 	// EditPasswordSet reports whether the room is locked (never the password
 	// itself, so it is safe for any reader of the room to see).
 	EditPasswordSet bool `json:"editPasswordSet,omitempty"`
@@ -197,7 +187,6 @@ func ResponseFromClipboard(key string, item Clipboard, exists bool) ClipboardRes
 		ExpiresAt:       item.ExpiresAt.UTC().Format(time.RFC3339),
 		Version:         item.Version,
 		Generation:      item.Generation,
-		ViewKey:         item.ViewKey,
 		EditPasswordSet: item.RoomPasswordSet(),
 		PasswordScope:   scope,
 		Exists:          exists,

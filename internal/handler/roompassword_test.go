@@ -249,9 +249,6 @@ func TestViewPasswordWebSocketFlow(t *testing.T) {
 	if st["passwordScope"] != "view" {
 		t.Fatalf("locked state passwordScope = %v, want view", st["passwordScope"])
 	}
-	if st["viewKey"] != nil && st["viewKey"] != "" {
-		t.Fatalf("locked state leaked viewKey: %v", st["viewKey"])
-	}
 
 	// Ops before auth are rejected with a clear error ack.
 	if err := conn.WriteJSON(map[string]any{

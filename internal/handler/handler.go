@@ -716,7 +716,6 @@ type wsOutbound struct {
 	ExpiresAt  string      `json:"expiresAt,omitempty"`
 	Version    int64       `json:"version,omitempty"`
 	Generation int64       `json:"generation,omitempty"`
-	ViewKey    string      `json:"viewKey,omitempty"`
 	Exists     *bool       `json:"exists,omitempty"`
 	UpdatedBy  string      `json:"updatedBy,omitempty"`
 	Items      []crdt.Item `json:"items,omitempty"`
@@ -795,27 +794,6 @@ func (h *Handler) sessionAuthed(sess *wsSession, key string) bool {
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key string) {
 	clientID := sanitizeClientID(r.URL.Query().Get("clientId"))
 
-	// Read-only (view link) sessions receive state/cursors/files but every op
-	// is rejected, so a shared view link can never mutate the room.
-	// ?view=true opens read-only on any room; legacy view links carrying the
-	// room's ViewKey are still honored; any other value is rejected so it can
-	// never silently become a read-write session.
-	viewParam := strings.TrimSpace(r.URL.Query().Get("view"))
-	var readOnly bool
-	switch viewParam {
-	case "":
-		readOnly = false
-	case "true":
-		readOnly = true
-	default:
-		item, ok := h.store.Peek(key)
-		if !ok || item.ViewKey == "" || !secureEqual(item.ViewKey, viewParam) {
-			writeError(w, http.StatusForbidden, "invalid view key")
-			return
-		}
-		readOnly = true
-	}
-
 	// DoS guard: cap concurrent sockets globally and per IP. The check runs
 	// before the upgrade so a flood is rejected with a cheap HTTP response
 	// instead of consuming per-connection goroutines and buffers.
@@ -881,7 +859,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 	go func() {
 		defer close(readDone)
 		// clientIP keys the password fail budget (same as HTTP paths).
-		h.wsReadLoop(conn, send, key, clientID, clientIP, bucket, readOnly, sess, authedCh)
+		h.wsReadLoop(conn, send, key, clientID, clientIP, bucket, sess, authedCh)
 	}()
 	defer func() {
 		// Stop both producers before closing send. The read loop may still be
@@ -960,7 +938,7 @@ func (h *Handler) wsWriteLoop(conn *websocket.Conn, send <-chan any) {
 	_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
-func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID, clientIP string, bucket *tokenBucket, readOnly bool, sess *wsSession, authedCh chan<- struct{}) {
+func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID, clientIP string, bucket *tokenBucket, sess *wsSession, authedCh chan<- struct{}) {
 	for {
 		// Exceeding the per-connection budget cuts the socket; the client's
 		// reconnect path resyncs from the authoritative state snapshot, so
@@ -1025,9 +1003,7 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 			})
 			h.broker.ping(key)
 		case "ops":
-			if clientID == "" || readOnly {
-				// Read-only sessions never mutate the room (defense in depth;
-				// the read-only UI does not send ops at all).
+			if clientID == "" {
 				continue
 			}
 			// View-scope: accept password on the first ops batch as implicit
@@ -1072,8 +1048,7 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 func (h *Handler) handleWSOps(send chan<- any, key, clientID, clientIP string, msg wsInbound, sess *wsSession) {
 	// Password is re-checked under the store lock via Auth. Cred binds a
 	// previously authenticated WS session; Password covers edit-scope batches
-	// and first-time view unlock via ops.password. Read-only sessions never
-	// reach this function.
+	// and first-time view unlock via ops.password.
 	var ttl time.Duration
 	if msg.TTLSeconds > 0 {
 		d, err := model.TTLFromSeconds(msg.TTLSeconds)
@@ -1337,7 +1312,6 @@ func (h *Handler) stateMessage(key string, item model.Clipboard, exists bool, au
 		msg.ExpiresAt = resp.ExpiresAt
 		msg.Version = resp.Version
 		msg.Generation = resp.Generation
-		msg.ViewKey = resp.ViewKey
 		existsTrue := true
 		msg.Exists = &existsTrue
 		msg.UpdatedBy = resp.UpdatedBy

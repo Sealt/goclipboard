@@ -29,7 +29,7 @@ func stubServer(t *testing.T) *httptest.Server {
 		rooms[key] = body.Content
 		json.NewEncoder(w).Encode(map[string]any{
 			"key": key, "content": body.Content, "ttlSeconds": 3600,
-			"version": 1, "exists": true, "viewKey": "vk123",
+			"version": 1, "exists": true,
 		})
 	})
 	mux.HandleFunc("/api/clipboard/", func(w http.ResponseWriter, r *http.Request) {
@@ -69,11 +69,11 @@ func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
 	return code, out.String(), errBuf.String()
 }
 
-func TestPushStdinAndViewLink(t *testing.T) {
+func TestPushStdin(t *testing.T) {
 	srv := stubServer(t)
 	defer srv.Close()
 
-	code, out, errOut := runCLI(t, "hello world", "push", "-url", srv.URL, "-v")
+	code, out, errOut := runCLI(t, "hello world", "push", "-url", srv.URL)
 	if code != ExitOK {
 		t.Fatalf("push exit = %d, stderr: %s", code, errOut)
 	}
@@ -81,8 +81,8 @@ func TestPushStdinAndViewLink(t *testing.T) {
 	if strings.TrimSpace(out) != wantURL {
 		t.Fatalf("push stdout = %q, want %q", out, wantURL)
 	}
-	if !strings.Contains(errOut, "?view=true") {
-		t.Fatalf("view link missing from stderr: %q", errOut)
+	if strings.TrimSpace(errOut) != "" {
+		t.Fatalf("push stderr not empty: %q", errOut)
 	}
 }
 
@@ -131,8 +131,8 @@ func TestPullByKeyAndByURL(t *testing.T) {
 		t.Fatalf("pull by key: code=%d out=%q err=%q", code, out, errOut)
 	}
 
-	// Pull by full URL (with view query, as a view link would carry).
-	code, out, _ = runCLI(t, "", "pull", srv.URL+"/abc?view=x")
+	// Pull by full URL (query strings are ignored by the resolver).
+	code, out, _ = runCLI(t, "", "pull", srv.URL+"/abc?x=1")
 	if code != ExitOK || strings.TrimSpace(out) != "pulled content" {
 		t.Fatalf("pull by url: code=%d out=%q", code, out)
 	}
