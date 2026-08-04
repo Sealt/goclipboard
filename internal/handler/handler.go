@@ -81,6 +81,8 @@ type Handler struct {
 	wsConns        *wsConnLimiter
 	wsMsgRate      float64
 	wsMsgBurst     int
+	// passFails budgets wrong room-password attempts per (IP, room).
+	passFails *passFailTracker
 
 	// lastContentEvent lets WS subscribers send compact ops when possible.
 	eventMu sync.Mutex
@@ -122,6 +124,7 @@ func New(sto *store.Store, static fs.FS, logger *slog.Logger, opts ...Options) *
 		lastEvent:  make(map[string]contentEvent),
 		wsMsgRate:  DefaultWSMsgRate,
 		wsMsgBurst: DefaultWSMsgBurst,
+		passFails:  &passFailTracker{m: make(map[string]*passFailSlot)},
 	}
 	maxWSConns, maxWSConnsPerIP := DefaultMaxWSConns, DefaultMaxWSConnsPerIP
 	if len(opts) > 0 {
@@ -160,16 +163,22 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/", h.handlePage)
 	mux.HandleFunc("/api/clipboard", h.handleCreateClipboard)
 	mux.HandleFunc("/api/clipboard/", h.handleClipboardAPI)
-	// Static assets: no long-lived cache — no-cache forces revalidation on
-	// every load, so deploys show up immediately; ?v= versioning in the HTML
-	// still busts any intermediate cache.
-	mux.Handle("/static/", staticNoCache(http.FileServer(http.FS(h.static))))
+	// Static assets: long cache when URL is versioned (?v=…); revalidate
+	// unversioned paths so deploys are not stuck on old JS/CSS.
+	mux.Handle("/static/", staticCacheHeaders(http.FileServer(http.FS(h.static))))
 	return mux
 }
 
-func staticNoCache(next http.Handler) http.Handler {
+func staticCacheHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
+		// Only versioned URLs (e.g. app.js?v=20260804u) get the long
+		// immutable cache. Any other query string would otherwise pin a
+		// stale asset for a year on the first request that carries one.
+		if strings.HasPrefix(r.URL.RawQuery, "v=") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -292,6 +301,22 @@ func (h *Handler) handleClipboardAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /api/clipboard/{key}/history — server-side version trail (shared browsers).
+	if strings.HasSuffix(suffix, "/history") {
+		keyPart := strings.TrimSuffix(suffix, "/history")
+		if keyPart == "" || strings.Contains(keyPart, "/") {
+			writeError(w, http.StatusNotFound, "clipboard not found")
+			return
+		}
+		key, err := model.ValidateKey(keyPart)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "clipboard not found")
+			return
+		}
+		h.handleHistory(w, r, key)
+		return
+	}
+
 	if strings.Contains(suffix, "/") {
 		writeError(w, http.StatusNotFound, "clipboard not found")
 		return
@@ -332,8 +357,13 @@ func (h *Handler) handleGetClipboard(w http.ResponseWriter, r *http.Request, key
 	// View-protected rooms withhold content until the room password is
 	// presented (X-Goclip-Password header or ?password= query).
 	if h.viewProtected(key) {
+		if !h.allowPasswordAttempt(r, key) {
+			writeError(w, http.StatusTooManyRequests, "too many password attempts")
+			return
+		}
 		pw := roomPasswordFromRequest(r)
 		if !h.store.PasswordOK(key, pw) {
+			h.recordPasswordFailure(r, key)
 			msg := "view password required"
 			if pw != "" {
 				msg = "invalid view password"
@@ -344,6 +374,7 @@ func (h *Handler) handleGetClipboard(w http.ResponseWriter, r *http.Request, key
 			}{msg, model.PasswordScopeView})
 			return
 		}
+		h.recordPasswordSuccess(r, key)
 	}
 
 	writeJSON(w, http.StatusOK, model.ResponseFromClipboard(key, item, true))
@@ -375,18 +406,31 @@ func (h *Handler) handleSaveClipboard(w http.ResponseWriter, r *http.Request, ke
 		return
 	}
 
-	// Locked rooms reject writes without the password — view-link holders
-	// who strip ?view=true get 403 here, not an edit session.
-	if h.store.HasPassword(key) && !h.store.PasswordOK(key, req.Password) {
-		writeError(w, http.StatusForbidden, "edit password required")
-		return
-	}
-
 	// Full document replace (LWW at document level); rebuilds CRDT chain.
 	// baseVersion > 0 makes it conditional so stale offline clients get a
 	// 409 with current state to merge against instead of clobbering peers.
+	// Password is verified under the store lock (see store.Auth) so a
+	// concurrent lock/rotate cannot race past a handler-only check.
+	// SetPassword claim-locks an unlocked room under that same write so CLI
+	// "push -password" never leaves content unlocked between two requests.
 	clientID := sanitizeClientID(req.ClientID)
-	item, err := h.store.SaveWithBase(key, req.Content, ttl, clientID, req.BaseVersion)
+	if !h.allowPasswordAttempt(r, key) {
+		writeError(w, http.StatusTooManyRequests, "too many password attempts")
+		return
+	}
+	auth := store.Auth{Password: req.Password}
+	if req.SetPassword {
+		if pw := strings.TrimSpace(req.Password); pw != "" {
+			auth.ClaimPassword = pw
+			auth.ClaimScope = strings.TrimSpace(req.PasswordScope)
+		}
+	}
+	item, err := h.store.SaveWithBase(key, req.Content, ttl, clientID, req.BaseVersion, auth)
+	if errors.Is(err, store.ErrPasswordMismatch) {
+		h.recordPasswordFailure(r, key)
+		writeError(w, http.StatusForbidden, "edit password required")
+		return
+	}
 	if errors.Is(err, store.ErrVersionConflict) {
 		cur, exists := h.store.Get(key)
 		writeJSON(w, http.StatusConflict, struct {
@@ -399,6 +443,7 @@ func (h *Handler) handleSaveClipboard(w http.ResponseWriter, r *http.Request, ke
 		writeStoreError(w, err)
 		return
 	}
+	h.recordPasswordSuccess(r, key)
 	resp := model.ResponseFromClipboard(key, item, true)
 	h.noteFullState(key, item.Version, item.Generation, item.UpdatedBy, item.Content)
 	h.broker.ping(key)
@@ -406,12 +451,21 @@ func (h *Handler) handleSaveClipboard(w http.ResponseWriter, r *http.Request, ke
 }
 
 func (h *Handler) handleDeleteClipboard(w http.ResponseWriter, r *http.Request, key string) {
-	if h.store.HasPassword(key) &&
-		!h.store.PasswordOK(key, strings.TrimSpace(r.Header.Get("X-Goclip-Password"))) {
-		writeError(w, http.StatusForbidden, "edit password required")
+	if !h.allowPasswordAttempt(r, key) {
+		writeError(w, http.StatusTooManyRequests, "too many password attempts")
 		return
 	}
-	h.store.Delete(key)
+	pw := roomPasswordFromRequest(r)
+	if err := h.store.DeleteAuth(key, store.Auth{Password: pw}); err != nil {
+		if errors.Is(err, store.ErrPasswordMismatch) {
+			h.recordPasswordFailure(r, key)
+			writeError(w, http.StatusForbidden, "edit password required")
+			return
+		}
+		writeStoreError(w, err)
+		return
+	}
+	h.recordPasswordSuccess(r, key)
 	if h.files != nil {
 		h.files.DeleteRoom(key)
 	}
@@ -420,6 +474,118 @@ func (h *Handler) handleDeleteClipboard(w http.ResponseWriter, r *http.Request, 
 	h.forgetEvent(key)
 	h.broker.ping(key)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleHistory lists (GET), force-captures (POST), or clears (DELETE) the
+// room's version history. Any password-protected room requires the room
+// password to read history (snapshots retain prior content, including text
+// later deleted from the editor). Manual capture and clear need edit rights
+// (password when locked). Prefer X-Goclip-Password; ?password= is accepted
+// for convenience but may appear in access logs.
+func (h *Handler) handleHistory(w http.ResponseWriter, r *http.Request, key string) {
+	auth := store.Auth{Password: roomPasswordFromRequest(r)}
+	switch r.Method {
+	case http.MethodGet:
+		if !h.allowPasswordAttempt(r, key) {
+			writeError(w, http.StatusTooManyRequests, "too many password attempts")
+			return
+		}
+		hist, ok, err := h.store.History(key, auth)
+		if errors.Is(err, store.ErrPasswordMismatch) {
+			h.recordPasswordFailure(r, key)
+			msg := "password required"
+			if auth.Password != "" {
+				msg = "invalid password"
+			}
+			writeJSON(w, http.StatusUnauthorized, struct {
+				Error         string `json:"error"`
+				PasswordScope string `json:"passwordScope"`
+			}{msg, model.PasswordScopeView})
+			return
+		}
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		h.recordPasswordSuccess(r, key)
+		if !ok {
+			// Empty room: return an empty trail rather than 404 so the UI
+			// can open history before the first edit lands.
+			writeJSON(w, http.StatusOK, struct {
+				Snapshots []model.HistoryEntry `json:"snapshots"`
+			}{Snapshots: []model.HistoryEntry{}})
+			return
+		}
+		if hist == nil {
+			hist = []model.HistoryEntry{}
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Snapshots []model.HistoryEntry `json:"snapshots"`
+		}{Snapshots: hist})
+	case http.MethodPost:
+		if !h.allowPasswordAttempt(r, key) {
+			writeError(w, http.StatusTooManyRequests, "too many password attempts")
+			return
+		}
+		hist, err := h.store.CaptureHistory(key, auth)
+		if errors.Is(err, store.ErrPasswordMismatch) {
+			h.recordPasswordFailure(r, key)
+			writeJSON(w, http.StatusForbidden, struct {
+				Error         string `json:"error"`
+				PasswordScope string `json:"passwordScope"`
+			}{"edit password required", model.PasswordScopeView})
+			return
+		}
+		if err != nil {
+			if errors.Is(err, store.ErrRoomNotFound) {
+				writeError(w, http.StatusNotFound, "clipboard not found")
+				return
+			}
+			if errors.Is(err, store.ErrMemoryLimit) || errors.Is(err, store.ErrTooManyRooms) {
+				writeError(w, http.StatusInsufficientStorage, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "capture failed")
+			return
+		}
+		h.recordPasswordSuccess(r, key)
+		if hist == nil {
+			hist = []model.HistoryEntry{}
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Snapshots []model.HistoryEntry `json:"snapshots"`
+		}{Snapshots: hist})
+	case http.MethodDelete:
+		if !h.allowPasswordAttempt(r, key) {
+			writeError(w, http.StatusTooManyRequests, "too many password attempts")
+			return
+		}
+		if err := h.store.ClearHistory(key, auth); err != nil {
+			if errors.Is(err, store.ErrPasswordMismatch) {
+				h.recordPasswordFailure(r, key)
+				writeJSON(w, http.StatusForbidden, struct {
+					Error         string `json:"error"`
+					PasswordScope string `json:"passwordScope"`
+				}{"edit password required", model.PasswordScopeView})
+				return
+			}
+			if errors.Is(err, store.ErrRoomNotFound) {
+				// Nothing to clear — treat as success for the UI.
+				writeJSON(w, http.StatusOK, struct {
+					Snapshots []model.HistoryEntry `json:"snapshots"`
+				}{Snapshots: []model.HistoryEntry{}})
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "clear failed")
+			return
+		}
+		h.recordPasswordSuccess(r, key)
+		writeJSON(w, http.StatusOK, struct {
+			Snapshots []model.HistoryEntry `json:"snapshots"`
+		}{Snapshots: []model.HistoryEntry{}})
+	default:
+		methodNotAllowed(w, http.MethodGet, http.MethodPost, http.MethodDelete)
+	}
 }
 
 // handleEditPassword sets, rotates or clears a room password.
@@ -476,18 +642,33 @@ func (h *Handler) handleEditPassword(w http.ResponseWriter, r *http.Request, key
 				}{set, sc})
 				return
 			}
-			if _, err := h.store.SaveWithBase(key, "", defaultTTL, "", 0); err != nil {
+			if _, err := h.store.SaveWithBase(key, "", defaultTTL, "", 0, store.Auth{}); err != nil {
+				// Creating an empty room to hold a password does not need auth.
 				writeStoreError(w, err)
+				return
+			}
+		}
+		// Rotating/clearing requires the current password — budget wrong
+		// guesses the same way as GET/save so this endpoint cannot be used
+		// to brute-force past passFailTracker.
+		wasLocked := h.store.HasPassword(key)
+		if wasLocked {
+			if !h.allowPasswordAttempt(r, key) {
+				writeError(w, http.StatusTooManyRequests, "too many password attempts")
 				return
 			}
 		}
 		if err := h.store.SetPassword(key, req.CurrentPassword, next, scope); err != nil {
 			if errors.Is(err, store.ErrPasswordMismatch) {
+				h.recordPasswordFailure(r, key)
 				writeError(w, http.StatusForbidden, "invalid edit password")
 				return
 			}
 			writeStoreError(w, err)
 			return
+		}
+		if wasLocked {
+			h.recordPasswordSuccess(r, key)
 		}
 		h.broker.ping(key)
 		set, sc := h.store.PasswordInfo(key)
@@ -509,8 +690,10 @@ func (h *Handler) viewProtected(key string) bool {
 	return set && scope == model.PasswordScopeView
 }
 
-// roomPasswordFromRequest extracts the room password from a read request
-// (X-Goclip-Password header or ?password= query), for view-protected rooms.
+// roomPasswordFromRequest extracts the room password from a request.
+// Prefer X-Goclip-Password (not logged by typical reverse proxies); the
+// ?password= query form is accepted for CLI/curl convenience but may appear
+// in access logs and Referer headers.
 func roomPasswordFromRequest(r *http.Request) string {
 	if p := strings.TrimSpace(r.Header.Get("X-Goclip-Password")); p != "" {
 		return p
@@ -572,9 +755,41 @@ type wsInbound struct {
 
 // wsSession tracks per-connection state for view-protected rooms: until the
 // client presents the room password via an "auth" message, content, files
-// and cursors are withheld.
+// and cursors are withheld. Auth is bound to PasswordCredential so rotating
+// or clearing the password invalidates the session without closing the
+// socket. All fields are guarded by mu because the read loop writes them and
+// the main select loop reads them.
 type wsSession struct {
-	authed bool
+	mu       sync.Mutex
+	authed   bool
+	authCred string // store.PasswordCredential at successful auth time
+}
+
+// markAuthed records that this session has proven the room password.
+// cred must be the current PasswordCredential (non-empty).
+func (s *wsSession) markAuthed(cred string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authed = true
+	s.authCred = cred
+}
+
+// isAuthed reports whether a prior auth still matches the room's current
+// password credential. A rotated password yields a new credential and
+// returns false; an unlocked room (empty cred) also returns false so the
+// next lock requires a fresh auth.
+func (s *wsSession) isAuthed(currentCred string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.authed || currentCred == "" || s.authCred == "" {
+		return false
+	}
+	return secureEqual(s.authCred, currentCred)
+}
+
+// sessionAuthed is the handler-side check used on every gated WS path.
+func (h *Handler) sessionAuthed(sess *wsSession, key string) bool {
+	return sess.isAuthed(h.store.PasswordCredential(key))
 }
 
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key string) {
@@ -656,7 +871,8 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 	// Fired by the read loop once an "auth" message unlocks a view-protected
 	// room; the main loop then pushes the real room state.
 	authedCh := make(chan struct{}, 1)
-	lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true, sess.authed)
+	lastAuthed := h.sessionAuthed(sess, key)
+	lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true, lastAuthed)
 
 	// Per-connection inbound message budget (flood guard); see tokenBucket.
 	bucket := newTokenBucket(h.wsMsgRate, float64(h.wsMsgBurst))
@@ -664,7 +880,8 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
-		h.wsReadLoop(conn, send, key, clientID, bucket, readOnly, sess, authedCh)
+		// clientIP keys the password fail budget (same as HTTP paths).
+		h.wsReadLoop(conn, send, key, clientID, clientIP, bucket, readOnly, sess, authedCh)
 	}()
 	defer func() {
 		// Stop both producers before closing send. The read loop may still be
@@ -680,6 +897,18 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 	presenceTicker := time.NewTicker(wsPresencePeriod)
 	defer presenceTicker.Stop()
 
+	// pushState re-evaluates session auth. Password rotate/clear does not bump
+	// document version, so we force a full state when auth flips (re-lock or
+	// unlock) even though contentChanged would otherwise be false.
+	pushState := func(force bool) {
+		authed := h.sessionAuthed(sess, key)
+		if authed != lastAuthed {
+			force = true
+			lastAuthed = authed
+		}
+		lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, force, authed)
+	}
+
 	for {
 		select {
 		case <-readDone:
@@ -690,9 +919,9 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 			return
 		case <-authedCh:
 			// Session unlocked a view-protected room: push the full state.
-			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, true, sess.authed)
+			pushState(true)
 		case <-ch:
-			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false, sess.authed)
+			pushState(false)
 		case <-pingTicker.C:
 			select {
 			case send <- wsControl{ping: true}:
@@ -701,7 +930,8 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request, key st
 		case <-presenceTicker.C:
 			// Push pruned presence so idle/left peers drop without waiting for edits.
 			// Also re-check file list in case TTL expiry dropped files without a write path.
-			lastVersion, lastGeneration, lastExists, lastFilesRev = h.enqueueRoomState(send, key, clientID, lastVersion, lastGeneration, lastExists, lastFilesRev, false, sess.authed)
+			// Re-check auth: a password rotate may have invalidated the session.
+			pushState(false)
 		}
 	}
 }
@@ -730,7 +960,7 @@ func (h *Handler) wsWriteLoop(conn *websocket.Conn, send <-chan any) {
 	_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
-func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID string, bucket *tokenBucket, readOnly bool, sess *wsSession, authedCh chan<- struct{}) {
+func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientID, clientIP string, bucket *tokenBucket, readOnly bool, sess *wsSession, authedCh chan<- struct{}) {
 	for {
 		// Exceeding the per-connection budget cuts the socket; the client's
 		// reconnect path resyncs from the authoritative state snapshot, so
@@ -749,14 +979,26 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 		case "auth":
 			// View-protected rooms: unlock this session once the room
 			// password checks out; the main loop then pushes the real state.
+			// Auth is bound to PasswordCredential so a later rotate/clear
+			// invalidates this session without closing the socket.
 			if h.viewProtected(key) {
-				if h.store.PasswordOK(key, msg.Password) {
-					sess.authed = true
+				if !h.allowPasswordAttemptIP(clientIP, key) {
+					h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "too many password attempts"})
+					continue
+				}
+				// AuthCredential validates and returns the credential in one
+				// atomic step — PasswordOK + PasswordCredential in sequence
+				// would let a concurrent rotation stamp this session with a
+				// credential it never presented.
+				if cred, ok := h.store.AuthCredential(key, msg.Password); ok && cred != "" {
+					h.recordPasswordSuccessIP(clientIP, key)
+					sess.markAuthed(cred)
 					select {
 					case authedCh <- struct{}{}:
 					default:
 					}
 				} else {
+					h.recordPasswordFailureIP(clientIP, key)
 					h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "invalid view password"})
 				}
 			}
@@ -765,6 +1007,11 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 				continue
 			}
 			if msg.CursorPos < 0 || msg.SelectionEnd < 0 {
+				continue
+			}
+			// View-protected rooms: presence is part of the sealed surface —
+			// do not accept caret updates until the session is authenticated.
+			if h.viewProtected(key) && !h.sessionAuthed(sess, key) {
 				continue
 			}
 			h.cursors.update(key, model.CursorInfo{
@@ -783,25 +1030,35 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 				// the read-only UI does not send ops at all).
 				continue
 			}
-			if h.viewProtected(key) && !sess.authed {
-				// Session has not presented the room password yet.
-				h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "view password required"})
-				continue
+			// View-scope: accept password on the first ops batch as implicit
+			// auth (same as an "auth" message) so non-SPA clients that only
+			// attach password to ops still unlock. Session-bound credential
+			// is re-checked under the store lock in ApplyOps.
+			if h.viewProtected(key) && !h.sessionAuthed(sess, key) {
+				if !h.allowPasswordAttemptIP(clientIP, key) {
+					h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "too many password attempts"})
+					continue
+				}
+				if cred, ok := h.store.AuthCredential(key, msg.Password); ok && cred != "" {
+					h.recordPasswordSuccessIP(clientIP, key)
+					sess.markAuthed(cred)
+					select {
+					case authedCh <- struct{}{}:
+					default:
+					}
+				} else {
+					h.recordPasswordFailureIP(clientIP, key)
+					h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "view password required"})
+					continue
+				}
 			}
-			// Locked rooms reject op batches (and TTL refreshes) without the
-			// room password — except sessions that already authenticated
-			// with it (view scope), which have proven the password once.
-			if h.store.HasPassword(key) && !sess.authed && !h.store.PasswordOK(key, msg.Password) {
-				h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "edit password required"})
-				continue
-			}
-			h.handleWSOps(send, key, clientID, msg)
+			h.handleWSOps(send, key, clientID, clientIP, msg, sess)
 		case "sync":
 			// Client detected a version gap (dropped/coalesced updates) and
 			// wants an authoritative snapshot.
 			cur, exists := h.store.Peek(key)
 			select {
-			case send <- h.stateMessage(key, cur, exists, sess.authed):
+			case send <- h.stateMessage(key, cur, exists, h.sessionAuthed(sess, key)):
 			default:
 			}
 		case "pong", "ping":
@@ -812,10 +1069,11 @@ func (h *Handler) wsReadLoop(conn *websocket.Conn, send chan<- any, key, clientI
 	}
 }
 
-func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbound) {
-	// Password enforcement happens in wsReadLoop (per-session): authenticated
-	// view sessions are exempt, everything else must present the password on
-	// each batch. Read-only sessions never reach this function.
+func (h *Handler) handleWSOps(send chan<- any, key, clientID, clientIP string, msg wsInbound, sess *wsSession) {
+	// Password is re-checked under the store lock via Auth. Cred binds a
+	// previously authenticated WS session; Password covers edit-scope batches
+	// and first-time view unlock via ops.password. Read-only sessions never
+	// reach this function.
 	var ttl time.Duration
 	if msg.TTLSeconds > 0 {
 		d, err := model.TTLFromSeconds(msg.TTLSeconds)
@@ -829,20 +1087,55 @@ func (h *Handler) handleWSOps(send chan<- any, key, clientID string, msg wsInbou
 	if len(msg.Ops) == 0 && ttl <= 0 {
 		return
 	}
-	item, changed, err := h.store.ApplyOps(key, msg.Ops, ttl, clientID)
+	auth := store.Auth{Password: msg.Password}
+	if sess != nil {
+		// Bind the session credential when still valid so rotate invalidates
+		// under the same lock as ApplyOps.
+		if cred := h.store.PasswordCredential(key); sess.isAuthed(cred) {
+			auth.Cred = cred
+		}
+	}
+	// Edit-scope (and any path that still presents a password without a
+	// bound session cred) shares the HTTP fail budget so WS is not a
+	// side-channel for online guessing.
+	needsPassTry := h.store.HasPassword(key) && auth.Cred == ""
+	if needsPassTry && !h.allowPasswordAttemptIP(clientIP, key) {
+		h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: "too many password attempts"})
+		return
+	}
+	item, changed, err := h.store.ApplyOps(key, msg.Ops, ttl, clientID, auth)
 	if err != nil {
 		if h.logger != nil {
 			h.logger.Debug("ws ops rejected", "key", key, "clientId", clientID, "error", err)
 		}
+		errMsg := err.Error()
+		if errors.Is(err, store.ErrPasswordMismatch) {
+			if needsPassTry {
+				h.recordPasswordFailureIP(clientIP, key)
+			}
+			if h.viewProtected(key) {
+				errMsg = "view password required"
+			} else {
+				errMsg = "edit password required"
+			}
+		}
 		// Error ack first so the sender drops the bad batch, then a snapshot
 		// so its document converges back to server state.
-		h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: err.Error()})
-		cur, exists := h.store.Peek(key)
-		select {
-		case send <- h.stateMessage(key, cur, exists, true):
-		default:
+		h.enqueueAck(send, wsOutbound{Type: "ack", Seq: msg.Seq, ErrMsg: errMsg})
+		// Password rejections must not force-drop local ops with a full state
+		// that wipes unacked typing; only capacity/validation errors need a
+		// convergent snapshot. The client re-auths and re-flushes pending ops.
+		if !errors.Is(err, store.ErrPasswordMismatch) {
+			cur, exists := h.store.Peek(key)
+			select {
+			case send <- h.stateMessage(key, cur, exists, true):
+			default:
+			}
 		}
 		return
+	}
+	if needsPassTry {
+		h.recordPasswordSuccessIP(clientIP, key)
 	}
 	// Direct ack: the broadcast path can coalesce or skip (idempotent
 	// re-applies do not bump the version), so the sender needs an explicit
@@ -1017,7 +1310,7 @@ func (h *Handler) filesMessage(key string, files []model.FileInfo, rev int64, up
 
 func (h *Handler) stateMessage(key string, item model.Clipboard, exists bool, authed bool) wsOutbound {
 	msg := wsOutbound{Type: "state", Key: key, Generation: item.Generation}
-	locked := exists && item.Password != ""
+	locked := exists && item.RoomPasswordSet()
 	msg.EditPasswordSet = &locked
 	scope := model.PasswordScopeOf(item.PasswordScope)
 	if locked {
@@ -1372,9 +1665,117 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusInsufficientStorage, err.Error())
 	case errors.Is(err, store.ErrRoomNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, store.ErrPasswordMismatch):
+		writeError(w, http.StatusForbidden, "edit password required")
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
 	}
+}
+
+// --- Per-room password attempt budget --------------------------------------
+// Complements the global IP rate limiter: short shared passwords should not
+// be online-bruteforceable just by spreading requests across endpoints.
+
+const (
+	passFailMax    = 12
+	passFailWindow = time.Minute
+	passFailBlock  = 30 * time.Second
+)
+
+type passFailSlot struct {
+	n            int
+	windowStart  time.Time
+	blockedUntil time.Time
+}
+
+// allowPasswordAttempt reports whether this client IP may still try a password
+// for the room. Missing tracker (tests constructing Handler by hand) allows.
+func (h *Handler) allowPasswordAttempt(r *http.Request, key string) bool {
+	return h.allowPasswordAttemptIP(h.clientIP(r), key)
+}
+
+// allowPasswordAttemptIP is the IP-keyed form used by both HTTP and WebSocket
+// auth paths so WS cannot bypass the fail budget.
+func (h *Handler) allowPasswordAttemptIP(ip, key string) bool {
+	if h == nil || h.passFails == nil {
+		return true
+	}
+	h.passFails.mu.Lock()
+	defer h.passFails.mu.Unlock()
+	slot := h.passFails.m[passFailKey(ip, key)]
+	if slot == nil {
+		return true
+	}
+	now := time.Now()
+	if now.Before(slot.blockedUntil) {
+		return false
+	}
+	return true
+}
+
+func (h *Handler) recordPasswordFailure(r *http.Request, key string) {
+	h.recordPasswordFailureIP(h.clientIP(r), key)
+}
+
+func (h *Handler) recordPasswordFailureIP(ip, key string) {
+	if h == nil {
+		return
+	}
+	if h.passFails == nil {
+		h.passFails = &passFailTracker{m: make(map[string]*passFailSlot)}
+	}
+	k := passFailKey(ip, key)
+	h.passFails.mu.Lock()
+	defer h.passFails.mu.Unlock()
+	now := time.Now()
+	slot := h.passFails.m[k]
+	if slot == nil {
+		slot = &passFailSlot{windowStart: now}
+		h.passFails.m[k] = slot
+	}
+	if now.Sub(slot.windowStart) > passFailWindow {
+		slot.n = 0
+		slot.windowStart = now
+	}
+	slot.n++
+	if slot.n >= passFailMax {
+		slot.blockedUntil = now.Add(passFailBlock)
+		slot.n = 0
+		slot.windowStart = now
+	}
+}
+
+func (h *Handler) recordPasswordSuccess(r *http.Request, key string) {
+	h.recordPasswordSuccessIP(h.clientIP(r), key)
+}
+
+func (h *Handler) recordPasswordSuccessIP(ip, key string) {
+	if h == nil || h.passFails == nil {
+		return
+	}
+	k := passFailKey(ip, key)
+	h.passFails.mu.Lock()
+	defer h.passFails.mu.Unlock()
+	delete(h.passFails.m, k)
+}
+
+func (h *Handler) clientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if h.ipResolver != nil {
+		return h.ipResolver.ClientIP(r)
+	}
+	return r.RemoteAddr
+}
+
+func passFailKey(ip, key string) string {
+	return ip + "\x00" + key
+}
+
+type passFailTracker struct {
+	mu sync.Mutex
+	m  map[string]*passFailSlot
 }
 
 func methodNotAllowed(w http.ResponseWriter, allowed ...string) {

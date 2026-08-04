@@ -35,12 +35,12 @@ GoClipboard gives you a **URL**. Paste into the room, share the link, and the co
 - 🔒 **Read-only mode** — append `?view=true` to a room link for a read-only session (the server hard-rejects writes); the share dialog now hands out a single room link and leaves access control to the room password
 - 🔑 **Room passwords** — type your own or auto-generate; pick the scope: **edit only** (viewing stays open) or **view** (the password is required to see any content at all)
 - ↩️ **Undo / redo** — collaborative undo (Ctrl+Z / Ctrl+Shift+Z) built on CRDT inverse ops, immune to concurrent edits
-- 🕘 **Version history** — snapshots captured automatically; restore any past version as a CRDT merge, never a clobber
+- 🕘 **Version history** — server-side trail (auto-captured, max 20); preview / restore / clear; password-gated when the room is locked; history retains deleted text — clear or lock before sharing secrets
 - 📝 **Markdown preview** — rendered preview with code highlighting (client-side, sanitized output)
 - 🔗 **QR share** — in-app QR code for the room (encodes the room link, optional `mode` param), scan with your phone
 - 📁 **File paste per room** — drag a file in, get a link; disk-backed, per-file download passwords, admin-gated upload/delete
-- 🔐 **Password hashing** — file passwords stored as salt + SHA-256 only
-- 💾 **Optional persistence** — set `PERSIST_DIR` and rooms survive restarts as CRDT snapshots (default stays fully in-memory/ephemeral)
+- 🔐 **Password hashing** — room and file passwords store salt + SHA-256 only (never plaintext on disk)
+- 💾 **Persistence** — rooms are snapshotted as CRDT docs (default `data/rooms`) and restored on restart; set `PERSIST_DIR=off` for a pure in-memory store
 - ⌨️ **CLI client** — the same binary pushes/pulls: `echo hi | goclipboard push` prints a URL
 - 🌙 **Dark theme + bilingual UI** — follows the system or toggles manually; Chinese/English with one click
 - 🚦 **Abuse resistance** — per-IP rate limiting plus an adaptive blocklist that bans scanners for 30 minutes
@@ -75,6 +75,7 @@ The same binary is both server and client (`-url` flag or `GOCLIPBOARD_URL` env;
 echo "hello" | goclipboard push            # → prints the room URL
 goclipboard push -ttl 2h notes.txt         # read a file, expire in 2 hours
 goclipboard push -v notes.txt              # also print the read-only link
+goclipboard push -password 'pw' -key AbC123 notes.txt  # write to a locked room
 goclipboard pull https://host/AbC123       # print room content to stdout
 goclipboard pull -o out.txt AbC123         # write to a file
 goclipboard pull -password 'pw' AbC123     # view-scoped password-protected room
@@ -104,6 +105,9 @@ POST   /api/clipboard                  # create a room (server-generated key) �
 GET    /api/clipboard/{key}            # fetch content + version + viewKey
 PUT    /api/clipboard/{key}            # full replace
 DELETE /api/clipboard/{key}            # delete
+GET    /api/clipboard/{key}/history    # version history (password required when room is locked)
+POST   /api/clipboard/{key}/history    # force-capture current content
+DELETE /api/clipboard/{key}/history    # clear history
 ```
 
 ```sh
@@ -112,7 +116,7 @@ curl -X PUT localhost:8080/api/clipboard/AbC123 \
   -d '{"content":"hello 世界","ttlSeconds":3600,"clientId":"my-site"}'
 ```
 
-The `viewKey` in the response builds a read-only link `/{key}?view={viewKey}`: pages opened with it run in read-only mode, and the WebSocket session is read-only too (the server rejects every write op).
+Read-only mode uses `/{key}?view=true` (the share panel's single room link can add `?mode=…`; append `view=true` manually when you need a read-only open). Legacy links with a real `viewKey` (`/{key}?view={viewKey}`) are still accepted by the server. Pages opened with either form run in read-only mode, and the WebSocket session is read-only too (the server rejects every write op). Access control for private content is handled by the room password (view scope), not by secret view links.
 
 `PUT` accepts an optional `baseVersion` for optimistic concurrency — a stale overwrite is rejected with `409` plus current state, so offline/REST clients can merge instead of clobbering.
 
@@ -120,10 +124,10 @@ The `viewKey` in the response builds a read-only link `/{key}?view={viewKey}`: p
 
 The share dialog sets a room password (**type your own or regenerate**) and picks its scope:
 
-- **Edit** (default) — viewing stays open; editing (content writes, delete, password changes) requires the password
-- **View** — viewing *and* editing require the password: unauthenticated sessions receive no content, and the file list/downloads are protected too
+- **Edit** (default) — content viewing stays open; editing (writes, delete, password changes, **reading/clearing history**) requires the password
+- **View** — viewing *and* editing require the password: unauthenticated sessions receive no content, and the file list / downloads / uploads / deletes are protected too
 
-The password lives only with whoever set it — the server never returns it (responses carry only `passwordSet` / `passwordScope`), so view-link holders can't recover it by stripping `?view=`.
+The password lives only with whoever set it — the server never returns it (responses carry only `passwordSet` / `passwordScope`), so holders of a read-only `?view=true` link can't recover it. On an unlocked room, any link holder can set a password and claim the lock — set one before sharing if that matters.
 
 ```http
 GET /api/clipboard/{key}/password          # → {"passwordSet":true,"scope":"view"}
@@ -132,14 +136,22 @@ PUT /api/clipboard/{key}/password          # set / rotate / clear
 # scope: "edit" | "view"
 ```
 
-Reading a **view-scoped** room requires the password (`X-Goclip-Password` header or `?password=` query) — otherwise `GET` returns `401`. A WebSocket session first receives a locked state frame (`passwordRequired: true`, no content), then sends `{"type":"auth","password":"..."}` to unlock; a wrong password gets an `invalid view password` error frame.
+Reading a **view-scoped** room requires the password (prefer `X-Goclip-Password`; `?password=` works for curl but may hit access logs) — otherwise `GET` returns `401`. A WebSocket session first receives a locked state frame (`passwordRequired: true`, no content), then sends `{"type":"auth","password":"..."}` to unlock; a wrong password gets an `invalid view password` error frame.
+
+### Version history
+
+Up to 20 server-side content snapshots per room (auto-captured with a 5s throttle; manual capture available). **Snapshots retain text that was later deleted or overwritten**, so:
+
+- Any password-protected room requires the room password for `GET/POST/DELETE …/history`
+- Clear history (or use a view-scoped password) before sharing sensitive rooms
+- History counts toward `MAX_MEMORY_MB`; near the cap, growth can return `507`
 
 ### Real-time (WebSocket)
 
 ```http
 GET /api/clipboard/{key}/ws?clientId={id}
-# read-only session:
-GET /api/clipboard/{key}/ws?clientId={id}&view={viewKey}
+# read-only session (?view=true, or legacy ?view={viewKey}):
+GET /api/clipboard/{key}/ws?clientId={id}&view=true
 ```
 
 **Server → client**
@@ -169,7 +181,7 @@ Ops: `ins` (`id`, `after`, `ch` — exactly one code point) and `del` (`id`).
 |-----------------------------------------|---------------------------------------|
 | `GET  /files`                           | open (anyone with the room URL)       |
 | `POST /files` (multipart)               | room open → file password; closed → admin + file password |
-| `GET  /files/{id}`                      | that file's password (`X-File-Password` or `?filePassword=` / `?password=`) |
+| `GET  /files/{id}`                      | that file's password (`X-File-Password` or `?filePassword=`; `?password=` is room-only) |
 | `DELETE /files/{id}`                    | admin password                        |
 | `GET/PUT /settings` (upload toggle)     | admin password                        |
 
@@ -189,10 +201,10 @@ All via environment variables:
 |-------------------|---------------|---------------------------------------------------------|
 | `PORT`            | `8080`        | Listen port                                             |
 | `MAX_ROOMS`       | `10000`       | Max live clipboard rooms (in-memory)                    |
-| `MAX_MEMORY_MB`   | `256`         | Estimated budget for content + CRDT atoms → `507` when exceeded |
+| `MAX_MEMORY_MB`   | `256`         | Estimated budget for content + CRDT atoms + history → `507` when exceeded |
 | `UPLOAD_PASSWORD` | _(empty)_     | Admin password for file upload/delete; empty disables file features |
 | `FILE_DIR`        | `data/files`  | On-disk root for uploaded files (`{FILE_DIR}/{room}/{id}.bin`) |
-| `PERSIST_DIR`     | _(empty)_     | Room persistence: when set, rooms are snapshotted to disk (one file per room, ~250 ms debounce) and restored on restart. Empty keeps the store purely in-memory/ephemeral |
+| `PERSIST_DIR`     | `data/rooms`  | Room snapshots on disk (one file per room, ~250 ms debounce); restored on restart. Set to `off` / `none` / `-` for a purely in-memory/ephemeral store |
 
 Operational defaults: rate limit 10 req/s (burst 20), adaptive blocklist (hard threshold 5, scan threshold 10, 30 s window, 30 min ban), 1-minute cleanup sweep, 10 s graceful shutdown.
 
@@ -202,7 +214,7 @@ Operational defaults: rate limit 10 req/s (burst 20), adaptive blocklist (hard t
 docker compose up -d
 ```
 
-Multi-arch (`linux/amd64`, `linux/arm64`, …) scratch image — no shell, no libc, just the binary and CA certs. Healthcheck wired up; the named volume persists files and room snapshots (compose.yaml enables `PERSIST_DIR=/data/rooms` by default; empty reverts to in-memory).
+Multi-arch (`linux/amd64`, `linux/arm64`, …) scratch image — no shell, no libc, just the binary and CA certs. Healthcheck wired up; the named volume persists uploads and room snapshots (compose.yaml uses `PERSIST_DIR=/data/rooms`).
 
 ## 🛠️ Development
 

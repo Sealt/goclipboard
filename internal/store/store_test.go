@@ -1,6 +1,8 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"goclipboard/internal/crdt"
+	"goclipboard/internal/model"
 )
 
 func mustSave(t *testing.T, st *Store, key, content string, ttl time.Duration, by string) {
@@ -108,7 +111,7 @@ func TestApplyOpsRecreatesExpiredRoomWithNewGeneration(t *testing.T) {
 	}
 	now = now.Add(2 * time.Second)
 
-	second, changed, err := st.ApplyOps("room", []crdt.Op{{Op: crdt.OpInsert, ID: "b:1", Ch: "N"}}, time.Hour, "b")
+	second, changed, err := st.ApplyOps("room", []crdt.Op{{Op: crdt.OpInsert, ID: "b:1", Ch: "N"}}, time.Hour, "b", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,10 +318,10 @@ func TestApplyOpsConcurrentMerge(t *testing.T) {
 	opsA := []crdt.Op{{Op: crdt.OpInsert, ID: "a:2", After: parent, Ch: "A"}}
 	opsB := []crdt.Op{{Op: crdt.OpInsert, ID: "b:2", After: parent, Ch: "B"}}
 
-	if _, _, err := st.ApplyOps("room", opsA, 0, "a"); err != nil {
+	if _, _, err := st.ApplyOps("room", opsA, 0, "a", Auth{}); err != nil {
 		t.Fatal(err)
 	}
-	item, _, err := st.ApplyOps("room", opsB, 0, "b")
+	item, _, err := st.ApplyOps("room", opsB, 0, "b", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +339,7 @@ func TestApplyOpsIdempotentNoVersionBump(t *testing.T) {
 	mustSave(t, st, "room", "z", time.Hour, "s")
 	op := []crdt.Op{{Op: crdt.OpInsert, ID: "s:1", After: "", Ch: "z"}}
 	// s:1 already exists from BuildFromString
-	item, _, err := st.ApplyOps("room", op, 0, "s")
+	item, _, err := st.ApplyOps("room", op, 0, "s", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,8 +370,10 @@ func TestMaxRooms(t *testing.T) {
 }
 
 func TestMemoryLimitBlocksGrowth(t *testing.T) {
-	// Budget fits one tiny room; a second room does not.
-	st := New(WithLimits(100, estimateBytes("x", 1)))
+	// Budget fits one tiny room including its auto-captured history entry;
+	// a second room does not.
+	budget := estimateBytes("x", 1) + historyBytes([]model.HistoryEntry{{Text: "x"}})
+	st := New(WithLimits(100, budget))
 	mustSave(t, st, "tiny", "x", time.Hour, "")
 
 	rooms, total := st.Stats()
@@ -381,7 +386,9 @@ func TestMemoryLimitBlocksGrowth(t *testing.T) {
 		t.Fatalf("err = %v, want ErrMemoryLimit", err)
 	}
 
-	// Existing room may still shrink or stay same size.
+	// Existing room may still shrink or stay same size (new history may
+	// append when text changes; keep within budget by using same budget
+	// headroom from the second-room rejection).
 	if _, err := st.Save("tiny", "z", time.Hour, ""); err != nil {
 		t.Fatalf("shrink/update existing: %v", err)
 	}
@@ -413,10 +420,11 @@ func TestContentTooLarge(t *testing.T) {
 
 func TestExpireFreesBudget(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	// Budget fits exactly one short room (estimate ≈ roomBase + content + items*192).
+	// Budget fits exactly one short room including auto history.
+	budget := estimateBytes("aaaa", 4) + historyBytes([]model.HistoryEntry{{Text: "aaaa"}})
 	st := New(
 		WithClock(func() time.Time { return now }),
-		WithLimits(10, estimateBytes("aaaa", 4)),
+		WithLimits(10, budget),
 	)
 	mustSave(t, st, "temp", "aaaa", time.Second, "")
 	_, total1 := st.Stats()
@@ -450,7 +458,7 @@ func TestApplyOpsRespectsMemoryLimit(t *testing.T) {
 	for clock := int64(2); clock < 50; clock++ {
 		id := crdt.FormatID("a", clock)
 		ops := []crdt.Op{{Op: crdt.OpInsert, ID: id, After: after, Ch: "x"}}
-		_, _, err := st.ApplyOps("room", ops, 0, "a")
+		_, _, err := st.ApplyOps("room", ops, 0, "a", Auth{})
 		if errors.Is(err, ErrMemoryLimit) {
 			hit = true
 			break
@@ -470,7 +478,7 @@ func TestApplyOpsTTLChangeBumpsVersion(t *testing.T) {
 	mustSave(t, st, "room", "z", time.Hour, "s")
 
 	// Same TTL: pure refresh, no version bump.
-	item, changed, err := st.ApplyOps("room", nil, time.Hour, "s")
+	item, changed, err := st.ApplyOps("room", nil, time.Hour, "s", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +487,7 @@ func TestApplyOpsTTLChangeBumpsVersion(t *testing.T) {
 	}
 
 	// Different TTL: version bump so WS subscribers rebroadcast expiry.
-	item, changed, err = st.ApplyOps("room", nil, 2*time.Hour, "s")
+	item, changed, err = st.ApplyOps("room", nil, 2*time.Hour, "s", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +501,7 @@ func TestApplyOpsTTLChangeBumpsVersion(t *testing.T) {
 
 func TestApplyOpsEmptyBatchCreatesRoom(t *testing.T) {
 	st := New()
-	item, changed, err := st.ApplyOps("fresh", nil, time.Hour, "s")
+	item, changed, err := st.ApplyOps("fresh", nil, time.Hour, "s", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +518,7 @@ func TestApplyOpsReportsContentChanged(t *testing.T) {
 	mustSave(t, st, "room", "z", time.Hour, "s")
 	op := []crdt.Op{{Op: crdt.OpInsert, ID: "a:2", After: "s:1", Ch: "!"}}
 
-	item, changed, err := st.ApplyOps("room", op, 0, "a")
+	item, changed, err := st.ApplyOps("room", op, 0, "a", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +527,7 @@ func TestApplyOpsReportsContentChanged(t *testing.T) {
 	}
 
 	// Re-applying the same batch (client resend after ack loss) is a no-op.
-	item, changed, err = st.ApplyOps("room", op, 0, "a")
+	item, changed, err = st.ApplyOps("room", op, 0, "a", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +542,7 @@ func TestSaveWithBaseConflict(t *testing.T) {
 	mustSave(t, st, "room", "v2", time.Hour, "b") // version 2
 
 	// Stale base → conflict, nothing written.
-	_, err := st.SaveWithBase("room", "stomp", time.Hour, "a", 1)
+	_, err := st.SaveWithBase("room", "stomp", time.Hour, "a", 1, Auth{})
 	if !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("err = %v, want ErrVersionConflict", err)
 	}
@@ -544,7 +552,7 @@ func TestSaveWithBaseConflict(t *testing.T) {
 	}
 
 	// Matching base → accepted.
-	item, err := st.SaveWithBase("room", "v3", time.Hour, "a", 2)
+	item, err := st.SaveWithBase("room", "v3", time.Hour, "a", 2, Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,12 +561,12 @@ func TestSaveWithBaseConflict(t *testing.T) {
 	}
 
 	// Base on a missing room → conflict (room may have expired).
-	if _, err := st.SaveWithBase("other", "x", time.Hour, "a", 5); !errors.Is(err, ErrVersionConflict) {
+	if _, err := st.SaveWithBase("other", "x", time.Hour, "a", 5, Auth{}); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("missing room err = %v, want ErrVersionConflict", err)
 	}
 
 	// baseVersion 0 keeps legacy unconditional LWW.
-	if _, err := st.SaveWithBase("room", "v4", time.Hour, "c", 0); err != nil {
+	if _, err := st.SaveWithBase("room", "v4", time.Hour, "c", 0, Auth{}); err != nil {
 		t.Fatalf("legacy save: %v", err)
 	}
 }
@@ -604,7 +612,7 @@ func TestPeekDocumentSurvivesApplyOps(t *testing.T) {
 
 	// A write must replace the stored document, not mutate the old one.
 	// Clock must exceed the document max (5) for a mid-string insert (Lamport).
-	_, _, err := st.ApplyOps("demo", []crdt.Op{{Op: crdt.OpInsert, ID: "b:6", After: "a:1", Ch: "X"}}, 0, "b")
+	_, _, err := st.ApplyOps("demo", []crdt.Op{{Op: crdt.OpInsert, ID: "b:6", After: "a:1", Ch: "X"}}, 0, "b", Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,10 +651,185 @@ func TestPeekConcurrentWithApplyOps(t *testing.T) {
 	}()
 
 	for i := 0; i < 500; i++ {
-		if _, _, err := st.ApplyOps("demo", []crdt.Op{{Op: crdt.OpInsert, ID: "b:" + strconv.Itoa(i+1), After: "", Ch: "X"}}, 0, "b"); err != nil {
+		if _, _, err := st.ApplyOps("demo", []crdt.Op{{Op: crdt.OpInsert, ID: "b:" + strconv.Itoa(i+1), After: "", Ch: "X"}}, 0, "b", Auth{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// ClaimPassword on SaveWithBase locks an unlocked room under the same write
+// as the content (CLI push -password create-and-lock).
+func TestSaveWithBaseClaimLocksAtomically(t *testing.T) {
+	st := New()
+	item, err := st.SaveWithBase("cli", "secret-body", time.Hour, "cli", 0, Auth{
+		Password:      "s3cret",
+		ClaimPassword: "s3cret",
+		ClaimScope:    "edit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Content != "secret-body" {
+		t.Fatalf("content = %q", item.Content)
+	}
+	if !st.HasPassword("cli") {
+		t.Fatal("room should be claim-locked after SaveWithBase")
+	}
+	set, scope := st.PasswordInfo("cli")
+	if !set || scope != "edit" {
+		t.Fatalf("PasswordInfo = %v %q, want locked edit", set, scope)
+	}
+	// Unauthenticated write must fail — content never sat unlocked.
+	if _, err := st.SaveWithBase("cli", "stolen", time.Hour, "x", 0, Auth{}); !errors.Is(err, ErrPasswordMismatch) {
+		t.Fatalf("write without password after claim: %v", err)
+	}
+	// Correct password still works; claim on an already-locked room is a no-op
+	// (must not rotate with ClaimPassword alone).
+	credBefore := st.PasswordCredential("cli")
+	if _, err := st.SaveWithBase("cli", "ok", time.Hour, "x", 0, Auth{
+		Password:      "s3cret",
+		ClaimPassword: "other",
+		ClaimScope:    "view",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.PasswordCredential("cli"); got != credBefore {
+		t.Fatal("ClaimPassword must not rotate an already-locked room")
+	}
+	set, scope = st.PasswordInfo("cli")
+	if !set || scope != "edit" {
+		t.Fatalf("scope should stay edit after ignored claim, got %v %q", set, scope)
+	}
+}
+
+// SaveWithBase / ApplyOps / DeleteAuth must reject wrong passwords under the
+// same lock as the mutation (handler-only checks are TOCTOU).
+func TestMutationsRequirePasswordAuth(t *testing.T) {
+	st := New()
+	mustSave(t, st, "locked", "body", time.Hour, "a")
+	if err := st.SetPassword("locked", "", "s3cret", "edit"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.SaveWithBase("locked", "hacked", time.Hour, "x", 0, Auth{}); !errors.Is(err, ErrPasswordMismatch) {
+		t.Fatalf("SaveWithBase without password: %v", err)
+	}
+	if _, err := st.SaveWithBase("locked", "hacked", time.Hour, "x", 0, Auth{Password: "wrong"}); !errors.Is(err, ErrPasswordMismatch) {
+		t.Fatalf("SaveWithBase wrong password: %v", err)
+	}
+	item, err := st.SaveWithBase("locked", "ok", time.Hour, "x", 0, Auth{Password: "s3cret"})
+	if err != nil || item.Content != "ok" {
+		t.Fatalf("SaveWithBase correct password: item=%+v err=%v", item, err)
+	}
+
+	if _, _, err := st.ApplyOps("locked", []crdt.Op{{Op: crdt.OpInsert, ID: "z:1", Ch: "Z"}}, 0, "z", Auth{}); !errors.Is(err, ErrPasswordMismatch) {
+		t.Fatalf("ApplyOps without password: %v", err)
+	}
+	if _, _, err := st.ApplyOps("locked", []crdt.Op{{Op: crdt.OpInsert, ID: "z:1", Ch: "Z"}}, 0, "z", Auth{Password: "s3cret"}); err != nil {
+		t.Fatalf("ApplyOps with password: %v", err)
+	}
+
+	// Session credential path (WS re-auth).
+	cred := st.PasswordCredential("locked")
+	if _, _, err := st.ApplyOps("locked", nil, 2*time.Hour, "z", Auth{Cred: cred}); err != nil {
+		t.Fatalf("ApplyOps with session cred: %v", err)
+	}
+
+	if err := st.DeleteAuth("locked", Auth{}); !errors.Is(err, ErrPasswordMismatch) {
+		t.Fatalf("DeleteAuth without password: %v", err)
+	}
+	if err := st.DeleteAuth("locked", Auth{Password: "s3cret"}); err != nil {
+		t.Fatalf("DeleteAuth with password: %v", err)
+	}
+}
+
+func TestLegacySHA256PasswordStillVerifies(t *testing.T) {
+	// Simulate a pre-bcrypt snapshot: PasswordHash = hex(SHA-256(salt:password)).
+	st := New()
+	mustSave(t, st, "legacy", "body", time.Hour, "a")
+	st.mu.Lock()
+	item := st.items["legacy"]
+	salt := "0123456789abcdef0123456789abcdef"
+	sum := sha256.Sum256([]byte(salt + ":" + "oldpass"))
+	item.PasswordSalt = salt
+	item.PasswordHash = hex.EncodeToString(sum[:])
+	item.PasswordScope = "view"
+	st.items["legacy"] = item
+	st.mu.Unlock()
+
+	if !st.PasswordOK("legacy", "oldpass") {
+		t.Fatal("legacy SHA-256 hash must still verify")
+	}
+	if st.PasswordOK("legacy", "nope") {
+		t.Fatal("legacy hash must reject wrong password")
+	}
+	// New password uses bcrypt.
+	if err := st.SetPassword("legacy", "oldpass", "newpass", "view"); err != nil {
+		t.Fatal(err)
+	}
+	item2, _ := st.Get("legacy")
+	if !strings.HasPrefix(item2.PasswordHash, "$2") {
+		t.Fatalf("rotated hash should be bcrypt, got %q", item2.PasswordHash)
+	}
+}
+
+// Passwords are trimmed on both the set and verify sides, and AuthCredential
+// validates + returns the credential in one atomic step so a concurrent
+// rotation cannot interleave between check and credential read.
+func TestPasswordTrimAndAuthCredential(t *testing.T) {
+	st := New()
+	mustSave(t, st, "pw", "body", time.Hour, "a")
+
+	if err := st.SetPassword("pw", "", "  secret  ", "edit"); err != nil {
+		t.Fatal(err)
+	}
+	if !st.PasswordOK("pw", "secret") {
+		t.Fatal("PasswordOK must match the trimmed password")
+	}
+	if !st.PasswordOK("pw", "  secret  ") {
+		t.Fatal("PasswordOK must trim the presented password")
+	}
+	if st.PasswordOK("pw", "   ") {
+		t.Fatal("whitespace-only input must never match")
+	}
+
+	// Correct password: credential returned and equal to PasswordCredential.
+	cred, ok := st.AuthCredential("pw", "  secret  ")
+	if !ok || cred == "" {
+		t.Fatalf("AuthCredential = %q, %v; want non-empty cred + ok", cred, ok)
+	}
+	if cred != st.PasswordCredential("pw") {
+		t.Fatal("AuthCredential credential must match PasswordCredential")
+	}
+	if _, ok := st.AuthCredential("pw", "wrong"); ok {
+		t.Fatal("AuthCredential must reject a wrong password")
+	}
+
+	// Rotation must change the credential (stale sessions expire).
+	st2 := New()
+	mustSave(t, st2, "rot", "body", time.Hour, "a")
+	if err := st2.SetPassword("rot", "", "one", "view"); err != nil {
+		t.Fatal(err)
+	}
+	cred1, ok1 := st2.AuthCredential("rot", "one")
+	if !ok1 || cred1 == "" {
+		t.Fatalf("first auth = %q, %v", cred1, ok1)
+	}
+	if err := st2.SetPassword("rot", "one", "two", "view"); err != nil {
+		t.Fatal(err)
+	}
+	cred2, ok2 := st2.AuthCredential("rot", "two")
+	if !ok2 || cred2 == "" || cred1 == cred2 {
+		t.Fatalf("rotation must change credential: %q -> %q (ok2=%v)", cred1, cred2, ok2)
+	}
+
+	// Unprotected room: any password accepted, no credential to bind to.
+	st3 := New()
+	mustSave(t, st3, "open", "body", time.Hour, "a")
+	cred3, ok3 := st3.AuthCredential("open", "whatever")
+	if !ok3 || cred3 != "" {
+		t.Fatalf("open room AuthCredential = %q, %v; want empty cred + ok", cred3, ok3)
+	}
 }

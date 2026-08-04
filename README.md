@@ -35,12 +35,12 @@ GoClipboard 给你一个 **URL**：把内容贴进房间，分享链接，所有
 - 🔒 **只读模式** —— 链接手动加 `?view=true` 即为只读（服务端强制拒绝一切写入 op），适合需要"只读分享"的场景；分享面板默认只给房间链接，访问控制交给房间密码
 - 🔑 **房间密码** —— 手动输入或自动生成；选择验证范围：**仅编辑需密码**（查看公开），或**查看和编辑都需密码**（未解锁看不到任何内容）
 - ↩️ **撤销 / 重做** —— 基于 CRDT 逆操作的协作式撤销（Ctrl+Z / Ctrl+Shift+Z），不受他人并发编辑干扰
-- 🕘 **版本历史** —— 自动存档编辑快照，一键恢复到任意历史版本（以 CRDT 增量合并，绝不覆盖他人内容）
+- 🕘 **版本历史** —— 服务端共享存档（编辑自动记录，最多 20 条），可预览/恢复/清空；有房间密码时查看历史也需密码；历史会保留已删除内容，分享前请清空或上锁
 - 📝 **Markdown 预览** —— 所见即所得渲染 + 代码高亮（纯前端、输出经过消毒，不怕恶意粘贴）
 - 🔗 **二维码分享** —— 弹窗内一键生成房间二维码（默认编码房间链接，可加 `mode` 参数），手机扫码即开
 - 📁 **房间文件分享** —— 拖入文件即得链接；落盘存储，每个文件独立下载密码，上传/删除需管理员密码
-- 🔐 **密码只存哈希** —— 文件密码仅保存 salt + SHA-256
-- 💾 **可选持久化** —— 设置 `PERSIST_DIR` 后房间以 CRDT 快照落盘，重启不丢（默认仍为纯内存、到期即焚）
+- 🔐 **密码只存哈希** —— 房间密码与文件密码均仅保存 salt + SHA-256（永不落盘明文）
+- 💾 **内容持久化** —— 房间以 CRDT 快照落盘（默认 `data/rooms`），重启自动恢复；`PERSIST_DIR=off` 可关回纯内存
 - ⌨️ **CLI 客户端** —— 同一个二进制即可 `push` / `pull`：`echo hi | goclipboard push` 直接拿链接
 - 🌙 **暗色主题 + 中英文界面** —— 跟随系统或手动切换，一键换语言
 - 🚦 **防滥用** —— 按 IP 限流 + 自适应黑名单，扫描者自动封禁 30 分钟
@@ -75,6 +75,7 @@ docker compose up -d          # 用 Docker 自托管
 echo "hello" | goclipboard push            # → 打印房间链接
 goclipboard push -ttl 2h notes.txt         # 读文件、2 小时后过期
 goclipboard push -v notes.txt              # 顺带打印只读链接
+goclipboard push -password 'pw' -key AbC123 notes.txt  # 写入已锁定房间
 goclipboard pull https://host/AbC123       # 拉取内容到 stdout
 goclipboard pull -o out.txt AbC123         # 写入文件
 goclipboard pull -password 'pw' AbC123     # 查看范围密码保护的房间
@@ -104,6 +105,9 @@ POST   /api/clipboard                  # 创建房间（key 由服务端生成�
 GET    /api/clipboard/{key}            # 读取内容 + 版本 + viewKey
 PUT    /api/clipboard/{key}            # 整篇替换
 DELETE /api/clipboard/{key}            # 删除
+GET    /api/clipboard/{key}/history    # 版本历史（有房间密码时需密码）
+POST   /api/clipboard/{key}/history    # 手动存档当前内容
+DELETE /api/clipboard/{key}/history    # 清空历史
 ```
 
 ```sh
@@ -120,10 +124,10 @@ curl -X PUT localhost:8080/api/clipboard/AbC123 \
 
 分享弹窗里可设置房间密码（**手动输入或一键重新生成**），并选择验证范围：
 
-- **编辑**（默认）—— 查看公开；编辑（内容写入、删除、改密码）需要密码
+- **编辑**（默认）—— 内容查看公开；编辑（内容写入、删除、改密码、**查看/清空历史**）需要密码
 - **查看** —— 查看和编辑都需要密码：未解锁的会话收不到任何内容，文件列表与下载同样受保护
 
-密码由设置者保管，服务端绝不回传（响应里只有 `passwordSet` / `passwordScope`），持有链接的人也无法通过删掉参数拿到它。
+密码由设置者保管，服务端绝不回传（响应里只有 `passwordSet` / `passwordScope`），持有链接的人也无法通过删掉参数拿到它。未锁定房间的任意链接持有者都可以设置密码并锁定（claim）；分享前建议先设好密码。
 
 ```http
 GET /api/clipboard/{key}/password          # → {"passwordSet":true,"scope":"view"}
@@ -131,7 +135,15 @@ PUT /api/clipboard/{key}/password          # 设置/修改/解除
 # 修改或解除时 currentPassword 必填（与旧密码一致）；scope: "edit" | "view"
 ```
 
-查看「查看范围」保护的房间需携带密码（`X-Goclip-Password` 请求头，或 `?password=` 查询参数），否则 `GET` 返回 `401`；WebSocket 会话先收到不含正文的锁定帧（`passwordRequired: true`），再发送 `{"type":"auth","password":"..."}` 解锁，密码错误会收到 `invalid view password` 错误帧。
+查看「查看范围」保护的房间需携带密码（优先 `X-Goclip-Password` 请求头；也接受 `?password=` 但可能进访问日志），否则 `GET` 返回 `401`；WebSocket 会话先收到不含正文的锁定帧（`passwordRequired: true`），再发送 `{"type":"auth","password":"..."}` 解锁，密码错误会收到 `invalid view password` 错误帧。
+
+### 版本历史
+
+服务端按房间保存最多 20 条内容快照（编辑自动记录，5s 节流；可手动存档）。**快照会保留后来被删除/覆盖的正文**，因此：
+
+- 有房间密码时，`GET/POST/DELETE …/history` 都需要密码（`X-Goclip-Password`）
+- 分享敏感内容前请「清空历史」，或使用查看范围密码
+- 历史占用内存预算（计入 `MAX_MEMORY_MB`），近满时可能因历史增长返回 `507`
 
 ### 实时同步（WebSocket）
 
@@ -168,7 +180,7 @@ op 类型：`ins`（`id`、`after`、`ch` —— 恰好一个码点）与 `del`�
 |---------------------------------------|---------------------------------------|
 | `GET  /files`                         | 公开（有房间 URL 即可）               |
 | `POST /files`（multipart）            | 房间开放 → 文件密码；未开放 → 管理员密码 + 文件密码 |
-| `GET  /files/{id}`                    | 该文件的密码（`X-File-Password` 或 `?filePassword=` / `?password=`） |
+| `GET  /files/{id}`                    | 该文件的密码（`X-File-Password` 或 `?filePassword=`；`?password=` 仅表示房间密码） |
 | `DELETE /files/{id}`                  | 管理员密码                            |
 | `GET/PUT /settings`（上传开关）       | 管理员密码                            |
 
@@ -194,10 +206,10 @@ Docker 部署时容器健康检查直接调用二进制自身（scratch 镜像�
 |-------------------------|-----------|-------------------------------------------------------------|
 | `PORT`                  | `8080`    | 监听端口                                                    |
 | `MAX_ROOMS`             | `10000`   | 最大存活房间数（内存中）                                    |
-| `MAX_MEMORY_MB`         | `256`     | 内容 + CRDT 原子的内存预算，超出返回 `507`                  |
+| `MAX_MEMORY_MB`         | `256`     | 内容 + CRDT 原子 + 版本历史的内存预算，超出返回 `507`       |
 | `UPLOAD_PASSWORD`       | _(空)_    | 文件上传/删除的管理员密码；留空停用文件功能                  |
 | `FILE_DIR`              | `data/files` | 上传文件的磁盘根目录（`{FILE_DIR}/{room}/{id}.bin`）     |
-| `PERSIST_DIR`           | _(空)_    | 房间持久化目录；设置后房间以 CRDT 快照落盘（每房一文件，~250ms 防抖），重启自动恢复。留空则纯内存、到期即焚 |
+| `PERSIST_DIR`           | `data/rooms` | 房间持久化目录；CRDT 快照落盘（每房一文件，~250ms 防抖），重启自动恢复。设为 `off` / `none` / `-` 则纯内存、到期即焚 |
 | `TRUSTED_PROXIES`       | _(空)_    | 可信反向代理 CIDR 列表（逗号分隔，如 `127.0.0.1/32,10.0.0.0/8`）。为空时**不信任任何转发头**（`CF-Connecting-IP`/`X-Forwarded-For`/`X-Real-IP` 一律忽略，限流/黑名单按直连 IP 计算），防止伪造头绕过限流或误封他人。Cloudflare 部署请填入其官方 IP 段（https://www.cloudflare.com/ips-v4、ips-v6），并优先使用 `CF-Connecting-IP`（Cloudflare 对 `X-Forwarded-For` 是追加而非覆写，链首可能被客户端伪造） |
 | `MAX_WS_CONNS`          | `512`     | WebSocket 全局并发连接上限，超出返回 `503`                  |
 | `MAX_WS_CONNS_PER_IP`   | `32`      | 单 IP 的 WebSocket 并发连接上限                             |
@@ -214,7 +226,7 @@ Docker 部署时容器健康检查直接调用二进制自身（scratch 镜像�
 docker compose up -d
 ```
 
-多架构（`linux/amd64`、`linux/arm64` 等）`scratch` 镜像——无 shell、无 libc，只有二进制和 CA 证书。自带健康检查；命名卷持久化文件与房间快照（compose.yaml 默认开启 `PERSIST_DIR=/data/rooms`，留空则回退为纯内存）。
+多架构（`linux/amd64`、`linux/arm64` 等）`scratch` 镜像——无 shell、无 libc，只有二进制和 CA 证书。自带健康检查；命名卷持久化上传文件与房间快照（compose.yaml 使用 `PERSIST_DIR=/data/rooms`）。
 
 ## 🛠️ 开发
 

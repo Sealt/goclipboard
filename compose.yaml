@@ -19,8 +19,8 @@ services:
       # ips-v6); empty (default) trusts no proxies.
       TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       FILE_DIR: "/data/files"
-      # Room persistence: snapshots under /data/rooms survive restarts.
-      # Unset (default) keeps rooms in memory only (ephemeral).
+      # Room persistence: CRDT snapshots under /data/rooms survive restarts.
+      # Set to "off" for a purely in-memory store.
       PERSIST_DIR: "/data/rooms"
       TMPDIR: "/data/tmp"
     volumes:

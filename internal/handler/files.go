@@ -84,6 +84,10 @@ func (h *Handler) handleRoomSettings(w http.ResponseWriter, r *http.Request, roo
 	}
 	switch r.Method {
 	case http.MethodGet:
+		// View-protected rooms: settings metadata is part of the sealed surface.
+		if !h.requireViewPassword(w, r, roomKey) {
+			return
+		}
 		writeJSON(w, http.StatusOK, h.files.RoomSettings(roomKey))
 	case http.MethodPut:
 		h.handleUpdateRoomSettings(w, r, roomKey)
@@ -95,6 +99,10 @@ func (h *Handler) handleRoomSettings(w http.ResponseWriter, r *http.Request, roo
 func (h *Handler) handleUpdateRoomSettings(w http.ResponseWriter, r *http.Request, roomKey string) {
 	if h.uploadPassword == "" {
 		writeError(w, http.StatusForbidden, "file access is disabled (UPLOAD_PASSWORD not set)")
+		return
+	}
+	// View-protected rooms: settings are part of the sealed surface.
+	if !h.requireViewPassword(w, r, roomKey) {
 		return
 	}
 	defer r.Body.Close()
@@ -139,6 +147,10 @@ func (h *Handler) handleUploadFile(w http.ResponseWriter, r *http.Request, roomK
 	}
 	if h.uploadPassword == "" {
 		writeError(w, http.StatusForbidden, "file upload is disabled (UPLOAD_PASSWORD not set)")
+		return
+	}
+	// View-protected rooms: uploads mutate the room surface (file list).
+	if !h.requireViewPassword(w, r, roomKey) {
 		return
 	}
 	// No size cap: password-gated single-user store streams large files to disk.
@@ -270,6 +282,10 @@ func (h *Handler) handleDeleteFile(w http.ResponseWriter, r *http.Request, roomK
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
+	// View-protected rooms: deletes mutate the sealed file list.
+	if !h.requireViewPassword(w, r, roomKey) {
+		return
+	}
 	if !h.requireAdminPassword(w, r) {
 		return
 	}
@@ -282,20 +298,32 @@ func (h *Handler) handleDeleteFile(w http.ResponseWriter, r *http.Request, roomK
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// requireViewPassword enforces the room password on reads when the room is
-// view-protected (scope "view"): the file list and downloads are part of the
-// room's content. Unprotected and edit-protected rooms pass through.
+// requireViewPassword enforces the room password when the room is
+// view-protected (scope "view"): the file list, downloads, uploads, deletes
+// and room file-settings are part of the room's sealed surface. Unprotected
+// and edit-protected rooms pass through.
 func (h *Handler) requireViewPassword(w http.ResponseWriter, r *http.Request, roomKey string) bool {
 	if !h.viewProtected(roomKey) {
 		return true
 	}
-	if h.store.PasswordOK(roomKey, roomPasswordFromRequest(r)) {
+	if !h.allowPasswordAttempt(r, roomKey) {
+		writeError(w, http.StatusTooManyRequests, "too many password attempts")
+		return false
+	}
+	pw := roomPasswordFromRequest(r)
+	if h.store.PasswordOK(roomKey, pw) {
+		h.recordPasswordSuccess(r, roomKey)
 		return true
+	}
+	h.recordPasswordFailure(r, roomKey)
+	msg := "view password required"
+	if pw != "" {
+		msg = "invalid view password"
 	}
 	writeJSON(w, http.StatusUnauthorized, struct {
 		Error         string `json:"error"`
 		PasswordScope string `json:"passwordScope"`
-	}{"view password required", model.PasswordScopeView})
+	}{msg, model.PasswordScopeView})
 	return false
 }
 
@@ -317,8 +345,10 @@ func writeFileStoreError(w http.ResponseWriter, err error) {
 }
 
 // requireAdminPassword enforces UPLOAD_PASSWORD for upload and delete.
-// Accepts (in order): X-Admin-Password, X-Upload-Password, query ?adminPassword=,
-// form adminPassword / password, or JSON body {"adminPassword"|"password":"..."}.
+// Accepts (in order): X-Admin-Password, X-Upload-Password, query
+// ?adminPassword=, form adminPassword / password, or JSON body
+// {"adminPassword":"..."}. Bare ?password= is reserved for the room password
+// (see roomPasswordFromRequest) and is intentionally not accepted here.
 func (h *Handler) requireAdminPassword(w http.ResponseWriter, r *http.Request) bool {
 	if h.uploadPassword == "" {
 		writeError(w, http.StatusForbidden, "file access is disabled (UPLOAD_PASSWORD not set)")
@@ -343,9 +373,8 @@ func extractAdminPassword(r *http.Request) string {
 	if p := r.URL.Query().Get("adminPassword"); p != "" {
 		return p
 	}
-	if p := r.URL.Query().Get("password"); p != "" {
-		return p
-	}
+	// Note: query ?password= is the room password (X-Goclip-Password / room
+	// gate) and must not be treated as the admin secret.
 	if r.MultipartForm != nil {
 		if vals := r.MultipartForm.Value["adminPassword"]; len(vals) > 0 && vals[0] != "" {
 			return vals[0]
@@ -372,6 +401,7 @@ func extractAdminPassword(r *http.Request) string {
 			if body.AdminPassword != "" {
 				return body.AdminPassword
 			}
+			// JSON "password" remains accepted for older upload-settings clients.
 			if body.Password != "" {
 				return body.Password
 			}
@@ -384,11 +414,9 @@ func extractFileDownloadPassword(r *http.Request) string {
 	if p := extractNamedPassword(r, "filePassword", "X-File-Password"); p != "" {
 		return p
 	}
-	// Convenience aliases for simple clients / links.
+	// Prefer distinct names so ?password= can stay the room password on
+	// view-scoped rooms. X-Upload-Password is a legacy alias only.
 	if p := r.Header.Get("X-Upload-Password"); p != "" {
-		return p
-	}
-	if p := r.URL.Query().Get("password"); p != "" {
 		return p
 	}
 	return ""

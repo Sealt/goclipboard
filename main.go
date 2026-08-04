@@ -82,9 +82,10 @@ func main() {
 		logger.Error("create file dir", "dir", fileDir, "error", err)
 		os.Exit(1)
 	}
-	// Optional room persistence: snapshots under PERSIST_DIR survive restarts.
-	// Empty (default) keeps the store purely in-memory / ephemeral.
-	persistDir := strings.TrimSpace(os.Getenv("PERSIST_DIR"))
+	// Room persistence: CRDT snapshots under PERSIST_DIR survive restarts.
+	// Default is data/rooms (same layout as FILE_DIR=data/files). Set
+	// PERSIST_DIR=off (or none / -) for a purely in-memory / ephemeral store.
+	persistDir := resolvePersistDir(os.Getenv("PERSIST_DIR"))
 	if persistDir != "" {
 		if err := os.MkdirAll(persistDir, 0o700); err != nil {
 			logger.Error("create persist dir", "dir", persistDir, "error", err)
@@ -102,6 +103,18 @@ func main() {
 		// than silently breaking multipart uploads at runtime.
 		logger.Error("TMPDIR not usable", "dir", tmpDir, "error", err)
 		os.Exit(1)
+	}
+
+	// Explicitly announce the persistence default: PERSIST_DIR unset now means
+	// data/rooms on disk (room content, version history and password hashes),
+	// not a purely in-memory store. "off" / "none" / "-" disables it.
+	if persistDir != "" {
+		logger.Info("disk persistence enabled",
+			"dir", persistDir,
+			"note", "room content, history and password hashes are written to disk",
+		)
+	} else {
+		logger.Info("disk persistence disabled (in-memory only)")
 	}
 
 	var persistOpts []store.Option
@@ -202,6 +215,21 @@ func envOrDefault(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// resolvePersistDir maps PERSIST_DIR to an on-disk path.
+// Unset / empty → DefaultPersistDir; "off" | "none" | "-" → disabled.
+func resolvePersistDir(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return store.DefaultPersistDir
+	}
+	switch strings.ToLower(v) {
+	case "off", "none", "-", "false", "0":
+		return ""
+	default:
+		return v
+	}
 }
 
 func envInt(key string, fallback int) int {

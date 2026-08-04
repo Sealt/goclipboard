@@ -128,10 +128,27 @@
     "解除锁定": "Unlock",
     "输入编辑密码": "Enter edit password",
     "此房间已锁定，编辑需要密码": "This room is locked; editing requires the password",
-    "未锁定：任何拿到链接的人都能查看和编辑。建议先设置密码再分享": "Open: anyone with the link can view and edit. Set a password before sharing.",
+    "未锁定：任何拿到链接的人都能查看和编辑，也可设置密码锁定房间。建议先设密码再分享": "Open: anyone with the link can view, edit, or set a password and lock the room. Set a password before sharing.",
     "已锁定：编辑需要输入密码": "Locked: editing requires the password.",
     "版本历史": "Version history",
-    "分享链接": "Share links",
+    "点击条目预览，确认后再恢复": "Click a snapshot to preview, then restore if it looks right",
+    "注意：历史会保留已删除/覆盖的内容，分享链接前请先清空或设密码": "Note: history keeps deleted/overwritten text. Clear it or set a password before sharing.",
+    "版本预览": "Snapshot preview",
+    "恢复此版本": "Restore this version",
+    "字符": "chars",
+    "手动": "manual",
+    "加载中…": "Loading…",
+    "加载历史失败": "Failed to load history",
+    "查看历史需要房间密码": "Room password required to view history",
+    "已存档当前版本": "Snapshot saved",
+    "内容未变化，未新增快照": "No changes — no new snapshot",
+    "存档失败": "Failed to save snapshot",
+    "暂无可存档内容": "Nothing to archive yet",
+    "清空历史": "Clear history",
+    "确定清空全部版本历史？此操作不可撤销": "Clear all version history? This cannot be undone.",
+    "已清空历史": "History cleared",
+    "清空历史失败": "Failed to clear history",
+    "分享链接": "Share",
     "切换主题": "Toggle theme",
     "分享链接 · 手机扫码或复制链接": "Share — scan the QR code or copy a link",
     "房间链接": "Room link",
@@ -142,9 +159,12 @@
     "存档当前版本": "Save snapshot",
     "恢复": "Restore",
     "暂无历史版本，编辑后自动记录": "No snapshots yet — they are captured automatically as you edit",
+    "暂无历史版本": "No snapshots yet",
+    "编辑后自动记录，也可手动存档": "Captured automatically as you edit, or save one manually",
     "已恢复到该版本": "Restored",
     "恢复失败": "Restore failed",
     "（当前）": " (current)",
+    "当前": "Current",
     "预览": "Preview",
     "编辑": "Edit",
     "自动": "Auto",
@@ -152,6 +172,7 @@
     "浅色": "Light",
     "主题：": "Theme: ",
     "语言": "Language",
+    "切换到": "Switch to ",
     "TTL 数值": "TTL value",
     "TTL 单位": "TTL unit",
     "分钟": "min",
@@ -193,7 +214,20 @@
   function applyLang() {
     document.documentElement.lang = LANG === "en" ? "en" : "zh-CN";
     var langBtn = document.getElementById("langBtn");
-    if (langBtn) langBtn.textContent = LANG === "en" ? "中" : "EN";
+    if (langBtn) {
+      // Monogram shows the language you will switch *to* (same as classic EN/中).
+      var next = LANG === "en" ? "zh" : "en";
+      var mono = next === "en" ? "EN" : "中";
+      langBtn.setAttribute("data-lang", LANG === "en" ? "en" : "zh");
+      langBtn.setAttribute("data-next", next);
+      var monoEl = langBtn.querySelector(".lang-mono");
+      if (monoEl) monoEl.textContent = mono;
+      langBtn.title =
+        t("语言") +
+        " · " +
+        (LANG === "en" ? "English → 中文" : "中文 → English");
+      langBtn.setAttribute("aria-label", t("切换到") + mono);
+    }
     var nodes = document.querySelectorAll("[data-i18n]");
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
@@ -449,7 +483,15 @@
   var historyModal = document.getElementById("historyModal");
   var historyList = document.getElementById("historyList");
   var historyCapture = document.getElementById("historyCapture");
+  var historyClear = document.getElementById("historyClear");
   var historyClose = document.getElementById("historyClose");
+  var historyWarn = document.getElementById("historyWarn");
+  var historyPreviewModal = document.getElementById("historyPreviewModal");
+  var historyPreviewMeta = document.getElementById("historyPreviewMeta");
+  var historyPreviewBody = document.getElementById("historyPreviewBody");
+  var historyPreviewClose = document.getElementById("historyPreviewClose");
+  var historyPreviewRestore = document.getElementById("historyPreviewRestore");
+  var historyPreviewIdx = -1;
 
   if (!roomTitle || !content || !ttlValue || !ttlUnit || !status) {
     console.error("GoClipboard: required DOM nodes missing (stale HTML/JS cache?)");
@@ -510,7 +552,6 @@
   var roomTitleClickCount = 0;
   var roomTitleClickTimer = 0;
   // Read-only (view link) mode
-  var viewKey = ""; // server-generated read-only key for this room
   var readOnlyMode = READ_ONLY;
   // Undo / redo stacks: entries are { ops, at } where del ops carry
   // { after, ch } captured from the doc so redo can revive via fresh ids.
@@ -518,11 +559,11 @@
   var redoStack = [];
   var undoCoalesceMs = 800;
   var maxUndoDepth = 100;
-  // Local version history: { text, version, at } snapshots (per browser).
+  // Server-side version history (shared across browsers). Cached list from
+  // GET /history; auto-capture happens on the server after content changes.
+  var historyAPIURL = apiURL + "/history";
   var historySnapshots = [];
-  var historyMax = 20;
-  var historyThrottleMs = 5000;
-  var lastHistoryAt = 0;
+  var historyLoading = false;
   // Markdown preview
   var previewVisible = false;
   var previewTimer = 0;
@@ -614,8 +655,22 @@
     if (shareClose) shareClose.addEventListener("click", closeShare);
     if (historyClose) historyClose.addEventListener("click", closeHistory);
     if (historyCapture) historyCapture.addEventListener("click", function () {
-      captureHistory(true);
+      captureHistoryManual();
     });
+    if (historyClear) historyClear.addEventListener("click", function () {
+      clearHistoryTrail();
+    });
+    if (historyPreviewClose) {
+      historyPreviewClose.addEventListener("click", closeHistoryPreview);
+    }
+    if (historyPreviewRestore) {
+      historyPreviewRestore.addEventListener("click", function () {
+        if (historyPreviewIdx < 0) return;
+        var idx = historyPreviewIdx;
+        closeHistoryPreview();
+        restoreSnapshot(idx);
+      });
+    }
     if (shareRoomCopy) {
       shareRoomCopy.addEventListener("click", function () {
         copyText(shareRoomUrl ? shareRoomUrl.textContent : "", shareRoomCopy);
@@ -634,16 +689,31 @@
           setRoomPassword();
           return;
         }
-        var p = getEditPassword();
+        var p = roomPassword();
         if (p) {
+          // Already remembered — copy without re-prompt (value was verified
+          // when it was saved or last used successfully).
           copyText(p, sharePassCopy);
           return;
         }
+        // Prompted value must verify against the server before we store it,
+        // otherwise a typo becomes a sticky wrong edit password.
         askEditPassword().then(function (pw) {
           if (!pw) return;
-          setEditPassword(pw);
-          renderShareUrls();
-          copyText(pw, sharePassCopy);
+          fetch(historyAPIURL, {
+            headers: { Accept: "application/json", "X-Goclip-Password": pw }
+          }).then(function (res) {
+            if (!res.ok) {
+              showToast(t("房间密码错误，请重试"));
+              return;
+            }
+            setEditPassword(pw);
+            if (passwordScope === "view") rememberViewPassword(pw);
+            renderShareUrls();
+            copyText(pw, sharePassCopy);
+          }).catch(function () {
+            showToast(t("房间密码错误，请重试"));
+          });
         });
       });
     }
@@ -657,18 +727,28 @@
         if (editPasswordSet) unlockRoom();
       });
     }
-    [shareModal, historyModal].forEach(function (m) {
+    [shareModal, historyModal, historyPreviewModal].forEach(function (m) {
       if (!m) return;
       m.addEventListener("click", function (e) {
-        if (e.target && e.target.getAttribute && e.target.getAttribute("data-modal-dismiss") != null) {
-          m.hidden = true;
+        if (e.target && e.target.closest && e.target.closest("[data-modal-dismiss]")) {
+          if (m === historyPreviewModal) closeHistoryPreview();
+          else if (m === historyModal) closeHistory();
+          else m.hidden = true;
         }
       });
     });
     document.addEventListener("keydown", function (e) {
       if (e.key !== "Escape") return;
-      if (shareModal && !shareModal.hidden) shareModal.hidden = true;
-      if (historyModal && !historyModal.hidden) historyModal.hidden = true;
+      // Topmost dialog first: snapshot preview sits above history.
+      if (historyPreviewModal && !historyPreviewModal.hidden) {
+        closeHistoryPreview();
+        return;
+      }
+      if (shareModal && !shareModal.hidden) {
+        shareModal.hidden = true;
+        return;
+      }
+      if (historyModal && !historyModal.hidden) closeHistory();
     });
   }
 
@@ -799,66 +879,279 @@
     updateUndoButtons();
   }
 
-  // --- Version history (local snapshots, restore via CRDT diff) --------------
+  // --- Version history (server-side trail, restore via CRDT diff) ------------
 
-  function captureHistory(manual) {
-    var now = Date.now();
-    if (!manual && now - lastHistoryAt < historyThrottleMs) return;
-    var text = doc.materialize();
-    var last = historySnapshots[historySnapshots.length - 1];
-    if (last && last.text === text) return;
-    historySnapshots.push({ text: text, version: knownVersion, at: now });
-    if (historySnapshots.length > historyMax) historySnapshots.shift();
-    lastHistoryAt = now;
+  function historyAuthHeaders(extra) {
+    var headers = { Accept: "application/json" };
+    if (extra) {
+      Object.keys(extra).forEach(function (k) {
+        headers[k] = extra[k];
+      });
+    }
+    return withRoomPasswordHeaders(headers);
+  }
+
+  function applyHistoryPayload(data) {
+    historySnapshots = (data && data.snapshots) || [];
+    if (!Array.isArray(historySnapshots)) historySnapshots = [];
+  }
+
+  // When the room is password-protected, history reads/writes need the room
+  // password (edit-scope rooms still keep content GET open, but not history).
+  function ensureHistoryPassword() {
+    if (!editPasswordSet) return Promise.resolve(true);
+    if (roomPassword()) return Promise.resolve(true);
+    return askEditPassword().then(function (entered) {
+      if (!entered) return false;
+      setEditPassword(entered);
+      if (passwordScope === "view") rememberViewPassword(entered);
+      return true;
+    });
+  }
+
+  function fetchHistory(retried) {
+    historyLoading = true;
     if (historyModal && !historyModal.hidden) renderHistory();
+    return fetch(historyAPIURL, { headers: historyAuthHeaders() })
+      .then(function (response) {
+        if ((response.status === 401 || response.status === 403) && !retried) {
+          // Stale or missing password — prompt once and retry.
+          return askEditPassword().then(function (entered) {
+            if (!entered) {
+              historyLoading = false;
+              showToast(t("查看历史需要房间密码"));
+              if (historyModal && !historyModal.hidden) renderHistory();
+              return null;
+            }
+            setEditPassword(entered);
+            if (passwordScope === "view") rememberViewPassword(entered);
+            return fetchHistory(true);
+          });
+        }
+        if (response.status === 401 || response.status === 403) {
+          // Retried with a (wrong) password — say so instead of a generic
+          // network-style failure message.
+          historyLoading = false;
+          if (historyModal && !historyModal.hidden) renderHistory();
+          showToast(t("房间密码错误，请重试"));
+          return null;
+        }
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        if (data == null) return;
+        // Nested retry returns undefined after handling UI.
+        if (data && data.snapshots !== undefined) {
+          applyHistoryPayload(data);
+        }
+        historyLoading = false;
+        if (historyModal && !historyModal.hidden) renderHistory();
+      })
+      .catch(function () {
+        historyLoading = false;
+        if (historyModal && !historyModal.hidden) {
+          renderHistory();
+          showToast(t("加载历史失败"));
+        }
+      });
+  }
+
+  // Manual archive only — automatic checkpoints are recorded server-side
+  // after content mutations (shared across every browser on the room).
+  function captureHistoryManual() {
+    if (readOnlyMode) return;
+    if (!doc.materialize()) {
+      showToast(t("暂无可存档内容"));
+      return;
+    }
+    ensureHistoryPassword().then(function (ok) {
+      if (!ok) return;
+      var headers = historyAuthHeaders({ "Content-Type": "application/json" });
+      fetch(historyAPIURL, { method: "POST", headers: headers, body: "{}" })
+        .then(function (response) {
+          if (response.status === 404) {
+            showToast(t("暂无可存档内容"));
+            return null;
+          }
+          if (response.status === 403 || response.status === 401) {
+            showToast(t("查看历史需要房间密码"));
+            return null;
+          }
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        })
+        .then(function (data) {
+          if (!data) return;
+          // Server skips a snapshot whose text matches the last one — only
+          // claim "saved" when the trail actually grew.
+          var added =
+            data.snapshots !== undefined &&
+            data.snapshots.length > historySnapshots.length;
+          applyHistoryPayload(data);
+          if (historyModal && !historyModal.hidden) renderHistory();
+          showToast(t(added ? "已存档当前版本" : "内容未变化，未新增快照"), "ok");
+        })
+        .catch(function () {
+          showToast(t("存档失败"));
+        });
+    });
+  }
+
+  function clearHistoryTrail() {
+    if (readOnlyMode) return;
+    if (!historySnapshots.length) {
+      showToast(t("暂无历史版本"));
+      return;
+    }
+    if (!window.confirm(t("确定清空全部版本历史？此操作不可撤销"))) return;
+    ensureHistoryPassword().then(function (ok) {
+      if (!ok) return;
+      fetch(historyAPIURL, { method: "DELETE", headers: historyAuthHeaders() })
+        .then(function (response) {
+          if (response.status === 403 || response.status === 401) {
+            showToast(t("查看历史需要房间密码"));
+            return null;
+          }
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        })
+        .then(function (data) {
+          if (!data) return;
+          applyHistoryPayload(data);
+          closeHistoryPreview();
+          if (historyModal && !historyModal.hidden) renderHistory();
+          showToast(t("已清空历史"), "ok");
+        })
+        .catch(function () {
+          showToast(t("清空历史失败"));
+        });
+    });
   }
 
   function openHistory() {
     if (!historyModal) return;
-    renderHistory();
     historyModal.hidden = false;
+    ensureHistoryPassword().then(function (ok) {
+      if (!ok) {
+        historyModal.hidden = true;
+        showToast(t("查看历史需要房间密码"));
+        return;
+      }
+      fetchHistory();
+    });
   }
 
   function closeHistory() {
+    closeHistoryPreview();
     if (historyModal) historyModal.hidden = true;
+  }
+
+  function openHistoryPreview(idx) {
+    var snap = historySnapshots[idx];
+    if (!snap || !historyPreviewModal) return;
+    historyPreviewIdx = idx;
+    var isCurrent = snap.text === doc.materialize();
+    var d = new Date(snap.at);
+    var parts = [d.toLocaleString()];
+    if (snap.version) parts.push("v" + snap.version);
+    parts.push((snap.text || "").length + " " + t("字符"));
+    if (isCurrent) parts.push(t("当前"));
+    if (snap.manual) parts.push(t("手动"));
+    if (historyPreviewMeta) historyPreviewMeta.textContent = parts.join(" · ");
+    if (historyPreviewBody) historyPreviewBody.textContent = snap.text || "";
+    if (historyPreviewRestore) {
+      historyPreviewRestore.disabled = isCurrent || readOnlyMode;
+      historyPreviewRestore.hidden = false;
+    }
+    historyPreviewModal.hidden = false;
+  }
+
+  function closeHistoryPreview() {
+    historyPreviewIdx = -1;
+    if (historyPreviewModal) historyPreviewModal.hidden = true;
+    if (historyPreviewBody) historyPreviewBody.textContent = "";
   }
 
   function renderHistory() {
     if (!historyList) return;
     historyList.innerHTML = "";
+    if (historyLoading && !historySnapshots.length) {
+      var loading = document.createElement("li");
+      loading.className = "history-empty";
+      loading.textContent = t("加载中…");
+      historyList.appendChild(loading);
+      return;
+    }
     if (!historySnapshots.length) {
       var empty = document.createElement("li");
       empty.className = "history-empty";
-      empty.textContent = t("暂无历史版本，编辑后自动记录");
+      var emptyTitle = document.createElement("span");
+      emptyTitle.className = "history-empty-title";
+      emptyTitle.textContent = t("暂无历史版本");
+      empty.appendChild(emptyTitle);
+      empty.appendChild(document.createTextNode(t("编辑后自动记录，也可手动存档")));
       historyList.appendChild(empty);
       return;
     }
     var current = doc.materialize();
     for (var i = historySnapshots.length - 1; i >= 0; i--) {
       (function (snap, idx) {
+        var isCurrent = snap.text === current;
         var li = document.createElement("li");
-        li.className = "history-item";
+        li.className = "history-item" + (isCurrent ? " is-current" : "");
+        li.setAttribute("role", "button");
+        li.tabIndex = 0;
+        li.setAttribute("aria-label", t("版本预览"));
         var meta = document.createElement("div");
         meta.className = "history-meta";
         var when = document.createElement("div");
         when.className = "history-when";
         var d = new Date(snap.at);
-        when.textContent =
-          d.toLocaleString() +
-          (snap.version ? " · v" + snap.version : "") +
-          (snap.text === current ? " · " + t("（当前）") : "");
+        var whenLabel = document.createElement("span");
+        whenLabel.textContent = d.toLocaleString();
+        when.appendChild(whenLabel);
+        if (snap.version) {
+          var ver = document.createElement("span");
+          ver.className = "history-ver";
+          ver.textContent = "v" + snap.version;
+          when.appendChild(ver);
+        }
+        if (snap.manual) {
+          var man = document.createElement("span");
+          man.className = "history-ver";
+          man.textContent = t("手动");
+          when.appendChild(man);
+        }
+        if (isCurrent) {
+          var badge = document.createElement("span");
+          badge.className = "history-badge";
+          badge.textContent = t("当前");
+          when.appendChild(badge);
+        }
         var prev = document.createElement("div");
         prev.className = "history-preview";
-        prev.textContent = snap.text.slice(0, 80) + (snap.text.length > 80 ? "…" : "");
-        prev.title = snap.text;
+        var text = snap.text || "";
+        prev.textContent = text.slice(0, 80) + (text.length > 80 ? "…" : "");
         meta.appendChild(when);
         meta.appendChild(prev);
         var restore = document.createElement("button");
         restore.type = "button";
+        restore.className = "btn-sm" + (isCurrent ? "" : " primary");
         restore.textContent = t("恢复");
-        restore.disabled = snap.text === current;
-        restore.addEventListener("click", function () {
+        restore.disabled = isCurrent || readOnlyMode;
+        restore.addEventListener("click", function (e) {
+          e.stopPropagation();
           restoreSnapshot(idx);
+        });
+        li.addEventListener("click", function () {
+          openHistoryPreview(idx);
+        });
+        li.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openHistoryPreview(idx);
+          }
         });
         li.appendChild(meta);
         li.appendChild(restore);
@@ -881,10 +1174,17 @@
       showToast(t("恢复失败"));
       return;
     }
+    // applyLocalText only mutates the CRDT doc — mirror undo/redo and push the
+    // materialized text into the textarea so the editor actually changes.
+    applyingRemote = true;
+    setContentValue(newText, captureSelection());
+    applyingRemote = false;
     onLocalTextChanged(oldText, newText);
     renderCursors();
     scheduleCursorSend();
+    updateUndoButtons();
     setFilesStatus(t("已恢复到该版本"), "ok");
+    showToast(t("已恢复到该版本"), "ok");
     closeHistory();
   }
 
@@ -917,15 +1217,38 @@
     } catch (e) { /* ignore */ }
   }
 
+  // Single source for room-password headers: localStorage (room owner) or
+  // sessionStorage (view unlock in this tab). Every X-Goclip-Password site
+  // must use this so file list / REST load stay in sync with WS auth.
+  function roomPassword() {
+    return getEditPassword() || rememberedViewPassword() || "";
+  }
+
+  function withRoomPasswordHeaders(headers) {
+    headers = headers || {};
+    var pw = roomPassword();
+    if (pw) headers["X-Goclip-Password"] = pw;
+    return headers;
+  }
+
   function generateEditPassword() {
+    // 58-char alphabet; rejection sampling avoids modulo bias on Uint32.
     var chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
     var out = "";
-    var arr = new Uint32Array(12);
+    var n = chars.length;
+    var maxUnbiased = Math.floor(0x100000000 / n) * n;
     if (window.crypto && crypto.getRandomValues) {
-      crypto.getRandomValues(arr);
-      for (var i = 0; i < 12; i++) out += chars[arr[i] % chars.length];
+      var arr = new Uint32Array(1);
+      for (var i = 0; i < 12; i++) {
+        var x;
+        do {
+          crypto.getRandomValues(arr);
+          x = arr[0];
+        } while (x >= maxUnbiased);
+        out += chars[x % n];
+      }
     } else {
-      for (var i = 0; i < 12; i++) out += chars[Math.floor(Math.random() * chars.length)];
+      for (var j = 0; j < 12; j++) out += chars[Math.floor(Math.random() * n)];
     }
     return out;
   }
@@ -988,6 +1311,16 @@
       if (p) sessionStorage.setItem(VIEW_PASS_STORE_KEY, p);
       else sessionStorage.removeItem(VIEW_PASS_STORE_KEY);
     } catch (e) { /* ignore */ }
+  }
+
+  // Persist the password for both edit (localStorage) and view (sessionStorage)
+  // so REST headers and WS auth stay consistent after set/unlock.
+  function rememberRoomPassword(pw, scope) {
+    if (!pw) return;
+    setEditPassword(pw);
+    if (scope === "view" || passwordScope === "view") {
+      rememberViewPassword(pw);
+    }
   }
 
   function sendAuth(pw) {
@@ -1060,9 +1393,9 @@
       if (!pw) return false;
       return saveEditPassword(pw, "", roomPassModalScope).then(function (ok) {
         if (ok) {
-          setEditPassword(pw);
           editPasswordSet = true;
           passwordScope = roomPassModalScope;
+          rememberRoomPassword(pw, passwordScope);
           // Authenticate this session right away: the lock-state broadcast
           // can beat the response handler and would otherwise prompt the
           // person who just set the password.
@@ -1101,8 +1434,8 @@
       // browser does not have it, saveEditPassword re-prompts on 403.
       return saveEditPassword(pw, getEditPassword(), roomPassModalScope).then(function (ok) {
         if (ok) {
-          setEditPassword(pw);
           passwordScope = roomPassModalScope;
+          rememberRoomPassword(pw, passwordScope);
           if (passwordScope === "view") sendAuth(pw);
           renderShareUrls();
         } else {
@@ -1117,6 +1450,7 @@
     return saveEditPassword("", getEditPassword()).then(function (ok) {
       if (ok) {
         setEditPassword("");
+        rememberViewPassword("");
         editPasswordSet = false;
         passwordScope = "";
         renderShareUrls();
@@ -1291,15 +1625,22 @@
         continue;
       }
       var attrs = el.attributes;
+      var hrefAttrs = [];
       for (var a = attrs.length - 1; a >= 0; a--) {
-        if (attrs[a].name.toLowerCase().indexOf("on") === 0) {
+        var aname = attrs[a].name.toLowerCase();
+        if (aname.indexOf("on") === 0) {
           el.removeAttribute(attrs[a].name);
+        } else if (aname === "href" || aname === "xlink:href") {
+          // xlink:href (SVG foreign content) is not exposed via
+          // hasAttribute("href") — collect it and validate like href,
+          // otherwise <a xlink:href="javascript:..."> survives.
+          hrefAttrs.push(attrs[a].name);
         }
       }
-      if (el.hasAttribute("href")) {
-        var href = el.getAttribute("href").trim().toLowerCase();
+      for (var i = 0; i < hrefAttrs.length; i++) {
+        var href = el.getAttribute(hrefAttrs[i]).trim().toLowerCase();
         if (!/^(https?:|mailto:|#|\/)/.test(href)) {
-          el.removeAttribute("href");
+          el.removeAttribute(hrefAttrs[i]);
         }
       }
       if (el.hasAttribute("src")) {
@@ -1703,7 +2044,6 @@
     } else {
       setIdleStatus();
     }
-    captureHistory(false);
   }
 
   function handleRemoteOps(data) {
@@ -1801,7 +2141,6 @@
     onLocalTextChanged(oldText, next);
     renderCursors();
     scheduleCursorSend();
-    captureHistory(false);
     setIdleStatus();
   }
 
@@ -1810,6 +2149,37 @@
   // the authoritative signal that a sent batch is durable.
   function handleAck(msg) {
     var batch = sentBatches[msg.seq || 0];
+    var passwordNeeded =
+      msg.error === "edit password required" || msg.error === "view password required";
+    var invalidView = msg.error === "invalid view password";
+
+    if (msg.error && (passwordNeeded || invalidView)) {
+      // Keep ops in pendingOps so a concurrent state frame re-diffs them and
+      // we can re-flush after unlock. Only clear the in-flight batch marker.
+      if (batch) {
+        delete sentBatches[msg.seq || 0];
+      }
+      if (invalidView) {
+        onInvalidViewPassword();
+        return;
+      }
+      askEditPassword().then(function (p) {
+        if (!p) {
+          setStatus("error");
+          return;
+        }
+        rememberRoomPassword(p, passwordScope);
+        if (passwordScope === "view" || msg.error === "view password required") {
+          sendAuth(p);
+        }
+        putFailures = 0;
+        // Prefer WS re-flush (with password / post-auth) over a full REST PUT
+        // that can clobber peers while the dialog was open.
+        scheduleFlush();
+      });
+      return;
+    }
+
     if (batch) {
       delete sentBatches[msg.seq || 0];
       pendingOps = pendingOps.filter(function (op) {
@@ -1817,26 +2187,8 @@
       });
     }
     if (msg.error) {
-      // Batch rejected (capacity/validation): its ops were dropped above and
-      // the server follows up with a state snapshot to converge on.
-      if (msg.error === "edit password required" || msg.error === "view password required") {
-        // Locked room: ask for the room password, remember it, then resync
-        // the full text over REST (the rejected batch is already dropped).
-        askEditPassword().then(function (p) {
-          if (!p) {
-            setStatus("error");
-            return;
-          }
-          setEditPassword(p);
-          putFailures = 0;
-          schedulePutFallback();
-        });
-        return;
-      }
-      if (msg.error === "invalid view password") {
-        onInvalidViewPassword();
-        return;
-      }
+      // Batch rejected (capacity/validation): ops dropped above; server
+      // follows up with a state snapshot to converge on.
       setStatus("error");
       return;
     }
@@ -1855,7 +2207,6 @@
     if (msg.expiresAt) updateMeta(msg);
     if (pendingOps.length) scheduleFlush();
     else if (!flushTimer) setIdleStatus();
-    captureHistory(false);
   }
 
   function forgetSentIds(ackedIds) {
@@ -1906,7 +2257,6 @@
     pendingOps = pendingOps.concat(diff.ops);
     pushUndoEntry(diff.ops);
     scheduleFlush();
-    captureHistory(false);
   }
 
   function onCompositionStart() {
@@ -2129,7 +2479,7 @@
           seq: seq,
           // View-authenticated sessions are exempt server-side; the password
           // still travels for edit-scoped rooms and REST fallbacks.
-          password: getEditPassword() || rememberedViewPassword() || undefined
+          password: roomPassword() || undefined
         }));
         pulseTraffic("up");
         if (batch.length) {
@@ -2181,7 +2531,7 @@
       ttlSeconds: ttlSeconds,
       clientId: CLIENT_ID
     };
-    var pw = getEditPassword() || rememberedViewPassword();
+    var pw = roomPassword();
     if (pw) body.password = pw;
     // Conditional save: if the server moved past what we saw, we get a 409
     // with current state and merge instead of overwriting peers' edits.
@@ -2244,7 +2594,6 @@
         localClock = 0;
         bumpClockFromDoc();
         lastSyncedText = text;
-        captureHistory(false);
         setTTLControls(result.data.ttlSeconds || ttlSeconds);
         if (content.value !== text) {
           // User kept typing while the PUT was in flight — push the rest.
@@ -2336,10 +2685,7 @@
     if (restPollTimer) return;
     restPollTimer = window.setInterval(function () {
       if (connected || putInFlight) return;
-      var headers = { Accept: "application/json" };
-      var vp = rememberedViewPassword();
-      if (vp) headers["X-Goclip-Password"] = vp;
-      fetch(apiURL, { headers: headers })
+      fetch(apiURL, { headers: withRoomPasswordHeaders({ Accept: "application/json" }) })
         .then(function (response) {
           if (!response.ok) throw new Error("HTTP " + response.status);
           return response.json();
@@ -2831,10 +3177,7 @@
 
   function load(force) {
     pulseTraffic("down");
-    var headers = { Accept: "application/json" };
-    var vp = rememberedViewPassword();
-    if (vp) headers["X-Goclip-Password"] = vp;
-    fetch(apiURL, { headers: headers })
+    fetch(apiURL, { headers: withRoomPasswordHeaders({ Accept: "application/json" }) })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
@@ -2991,9 +3334,6 @@
   }
 
   function updateMeta(data) {
-    if (data.viewKey) {
-      viewKey = String(data.viewKey);
-    }
     if (data.expiresAt) {
       lastExpiresAt = data.expiresAt;
       renderExpires(data.expiresAt);
@@ -3110,9 +3450,17 @@
     status.setAttribute("data-tone", "err");
   }
 
-  // --- Toast notifications (top-right) ----------------------------------------
+  // --- Toast notifications (sonner-style, top-center) -------------------------
 
   var toastWrap = null;
+  var TOAST_ICON_OK =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"></path></svg>';
+  var TOAST_ICON_ERR =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg>';
+  var TOAST_ICON_WARN =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+  var TOAST_ICON_CLOSE =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"></path></svg>';
 
   function ensureToastWrap() {
     if (toastWrap && toastWrap.parentNode) return toastWrap;
@@ -3123,22 +3471,33 @@
     return toastWrap;
   }
 
-  // Show a transient top-right toast. tone: "" (error, default) | "ok".
+  // tone: "ok" | "warn" | "err" (default).
   function showToast(msg, tone) {
     var wrap = ensureToastWrap();
+    var kind = tone === "ok" ? "ok" : tone === "warn" ? "warn" : "err";
     var el = document.createElement("div");
-    el.className = "toast" + (tone === "ok" ? " ok" : "");
+    el.className = "toast " + kind;
+    el.setAttribute("role", kind === "err" ? "alert" : "status");
+
+    var icon = document.createElement("span");
+    icon.className = "toast-icon";
+    icon.innerHTML =
+      kind === "ok" ? TOAST_ICON_OK : kind === "warn" ? TOAST_ICON_WARN : TOAST_ICON_ERR;
+
     var text = document.createElement("span");
     text.className = "toast-text";
     text.textContent = msg;
+
     var close = document.createElement("button");
     close.type = "button";
     close.className = "toast-close";
-    close.textContent = "×";
+    close.innerHTML = TOAST_ICON_CLOSE;
     close.setAttribute("aria-label", t("关闭"));
     close.addEventListener("click", function () {
       dismissToast(el);
     });
+
+    el.appendChild(icon);
     el.appendChild(text);
     el.appendChild(close);
     wrap.appendChild(el);
@@ -3152,7 +3511,7 @@
     el.classList.add("leaving");
     window.setTimeout(function () {
       if (el.parentNode) el.parentNode.removeChild(el);
-    }, 200);
+    }, 180);
   }
 
   // --- File paste / drag / password modal ------------------------------------
@@ -3201,7 +3560,7 @@
       }
     }
     passwordModal.addEventListener("click", function (e) {
-      if (e.target && e.target.getAttribute("data-modal-dismiss") != null) {
+      if (e.target && e.target.closest && e.target.closest("[data-modal-dismiss]")) {
         closePasswordModal(null);
       }
     });
@@ -3341,11 +3700,11 @@
       setFilesStatus(t("正在" + (next ? "开启" : "关闭") + "文件上传…"));
       return fetch(settingsAPIURL, {
         method: "PUT",
-        headers: {
+        headers: withRoomPasswordHeaders({
           Accept: "application/json",
           "Content-Type": "application/json",
           "X-Admin-Password": adminPassword
-        },
+        }),
         body: JSON.stringify({
           fileUploadEnabled: next,
           adminPassword: adminPassword
@@ -3360,6 +3719,9 @@
         })
         .then(function (result) {
           if (result.status === 401) {
+            if (result.data && result.data.passwordScope === "view") {
+              throw new Error(t("房间密码错误，请重试"));
+            }
             rememberAdminPassword("");
             throw new Error(t("管理员密码错误"));
           }
@@ -3393,11 +3755,11 @@
               rememberAdminPassword(pw);
               return fetch(settingsAPIURL, {
                 method: "PUT",
-                headers: {
+                headers: withRoomPasswordHeaders({
                   Accept: "application/json",
                   "Content-Type": "application/json",
                   "X-Admin-Password": pw
-                },
+                }),
                 body: JSON.stringify({
                   fileUploadEnabled: next,
                   adminPassword: pw
@@ -3426,10 +3788,7 @@
 
   function loadFiles(silent) {
     if (!fileList) return;
-    var headers = { Accept: "application/json" };
-    var vp = rememberedViewPassword();
-    if (vp) headers["X-Goclip-Password"] = vp;
-    fetch(filesAPIURL, { headers: headers })
+    fetch(filesAPIURL, { headers: withRoomPasswordHeaders({ Accept: "application/json" }) })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
@@ -3805,7 +4164,7 @@
       form.append("adminPassword", adminPassword);
     }
 
-    var headers = { Accept: "application/json" };
+    var headers = withRoomPasswordHeaders({ Accept: "application/json" });
     if (adminPassword) {
       headers["X-Admin-Password"] = adminPassword;
     }
@@ -3821,7 +4180,12 @@
         return { ok: response.ok, status: response.status, data: {} };
       });
     }).then(function (result) {
-      if (result.status === 401) throw new Error(t("管理员密码错误"));
+      if (result.status === 401) {
+        if (result.data && result.data.passwordScope === "view") {
+          throw new Error(t("房间密码错误，请重试"));
+        }
+        throw new Error(t("管理员密码错误"));
+      }
       if (result.status === 403) {
         throw new Error(result.data.error || t("上传未启用"));
       }
@@ -3867,12 +4231,23 @@
       setFilesStatus(t("正在下载…"));
       return fetch(filesAPIURL + "/" + encodeURIComponent(id), {
         method: "GET",
-        headers: { "X-File-Password": password }
+        headers: withRoomPasswordHeaders({ "X-File-Password": password })
       })
         .then(function (response) {
           if (response.status === 401) {
-            rememberFilePassword("");
-            throw new Error(t("文件密码错误"));
+            // Could be room view password or per-file password; clear file
+            // cache only when the body does not indicate view scope.
+            return response.json().then(function (data) {
+              if (data && data.passwordScope === "view") {
+                throw new Error(t("房间密码错误，请重试"));
+              }
+              rememberFilePassword("");
+              throw new Error(t("文件密码错误"));
+            }).catch(function (e) {
+              if (e && e.message) throw e;
+              rememberFilePassword("");
+              throw new Error(t("文件密码错误"));
+            });
           }
           if (response.status === 403) throw new Error(t("文件访问未启用"));
           if (response.status === 404) throw new Error(t("文件不存在"));
@@ -3970,17 +4345,26 @@
       setFilesStatus(t("正在删除…"));
       return fetch(filesAPIURL + "/" + encodeURIComponent(id), {
         method: "DELETE",
-        headers: {
+        headers: withRoomPasswordHeaders({
           Accept: "application/json",
           "Content-Type": "application/json",
           "X-Admin-Password": password
-        },
+        }),
         body: JSON.stringify({ adminPassword: password })
       })
         .then(function (response) {
           if (response.status === 401) {
-            rememberAdminPassword("");
-            throw new Error(t("管理员密码错误"));
+            return response.json().then(function (data) {
+              if (data && data.passwordScope === "view") {
+                throw new Error(t("房间密码错误，请重试"));
+              }
+              rememberAdminPassword("");
+              throw new Error(t("管理员密码错误"));
+            }).catch(function (e) {
+              if (e && e.message) throw e;
+              rememberAdminPassword("");
+              throw new Error(t("管理员密码错误"));
+            });
           }
           if (response.status === 404) throw new Error(t("文件不存在"));
           if (!response.ok && response.status !== 204) {
@@ -4011,11 +4395,11 @@
               rememberAdminPassword(pw);
               return fetch(filesAPIURL + "/" + encodeURIComponent(id), {
                 method: "DELETE",
-                headers: {
+                headers: withRoomPasswordHeaders({
                   Accept: "application/json",
                   "Content-Type": "application/json",
                   "X-Admin-Password": pw
-                },
+                }),
                 body: JSON.stringify({ adminPassword: pw })
               }).then(function (response) {
                 if (response.status === 401) throw new Error(t("管理员密码错误"));

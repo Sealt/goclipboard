@@ -11,38 +11,46 @@ import (
 	"goclipboard/internal/model"
 )
 
-// Persistence (optional) keeps rooms across restarts as per-room JSON
-// snapshots under {dir}/{key}.json. It is off by default (PERSIST_DIR unset):
-// the service stays ephemeral unless the operator opts in. Snapshots are
-// written debounced (~250ms after the last mutation) so a typing burst does
-// not hit the disk once per op batch; a stale write is detected and retried.
+// Persistence keeps rooms across restarts as per-room JSON snapshots under
+// {dir}/{key}.json. The server default (see main) is data/rooms; operators can
+// still opt out with PERSIST_DIR=off. Snapshots are written debounced (~250ms
+// after the last mutation) so a typing burst does not hit the disk once per op
+// batch; a stale write is detected and retried.
 //
 // The snapshot stores the full CRDT item set, so restored rooms keep their
 // exact structure (ids, tombstones, view keys) — peers reconnect and merge as
 // if the server never restarted.
 
+// DefaultPersistDir is the on-disk root used when PERSIST_DIR is unset.
+// Mirrors DefaultFileDir (data/files → data/rooms).
+const DefaultPersistDir = "data/rooms"
+
 const persistFlushInterval = 250 * time.Millisecond
 
 // roomSnapshot is the on-disk representation of one live room.
 type roomSnapshot struct {
-	Key          string      `json:"key"`
-	ViewKey      string      `json:"viewKey,omitempty"`
-	Password     string      `json:"password,omitempty"`
-	PasswordScope string     `json:"passwordScope,omitempty"`
-	// EditPassword is the legacy pre-scope field; migrated to Password on load.
-	EditPassword string      `json:"editPassword,omitempty"`
-	Content      string      `json:"content"`
-	TTLSeconds int64       `json:"ttlSeconds"`
-	ExpiresAt  int64       `json:"expiresAt"` // unix seconds
-	Version    int64       `json:"version"`
-	Generation int64       `json:"generation"`
-	UpdatedAt  int64       `json:"updatedAt"` // unix seconds
-	UpdatedBy  string      `json:"updatedBy,omitempty"`
-	Items      []crdt.Item `json:"items"`
+	Key           string `json:"key"`
+	ViewKey       string `json:"viewKey,omitempty"`
+	PasswordHash  string `json:"passwordHash,omitempty"`
+	PasswordSalt  string `json:"passwordSalt,omitempty"`
+	PasswordScope string `json:"passwordScope,omitempty"`
+	// Password / EditPassword are legacy plaintext fields (pre-hash / pre-scope).
+	// Migrated to salt+hash on load and never written back.
+	Password     string               `json:"password,omitempty"`
+	EditPassword string               `json:"editPassword,omitempty"`
+	Content      string               `json:"content"`
+	TTLSeconds   int64                `json:"ttlSeconds"`
+	ExpiresAt    int64                `json:"expiresAt"` // unix seconds
+	Version      int64                `json:"version"`
+	Generation   int64                `json:"generation"`
+	UpdatedAt    int64                `json:"updatedAt"` // unix seconds
+	UpdatedBy    string               `json:"updatedBy,omitempty"`
+	Items        []crdt.Item          `json:"items"`
+	History      []model.HistoryEntry `json:"history,omitempty"`
 }
 
 // WithPersistence enables disk snapshots under dir. Empty dir keeps the store
-// purely in-memory (the default).
+// purely in-memory (no flusher, no restore).
 func WithPersistence(dir string) Option {
 	return func(s *Store) {
 		dir = strings.TrimSpace(dir)
@@ -86,6 +94,9 @@ func (s *Store) startPersister() {
 	s.persistRunning = true
 	if err := os.MkdirAll(s.persistDir, 0o700); err != nil {
 		// Disk problem: keep serving from memory; snapshots fail silently.
+		// Drop the persist dir so Close() takes the in-memory early-return
+		// path instead of blocking forever on a writer that never started.
+		s.persistDir = ""
 		return
 	}
 	s.loadPersisted()
@@ -153,20 +164,25 @@ func (s *Store) writeSnapshot(key string) {
 	snap := roomSnapshot{
 		Key:           key,
 		ViewKey:       item.ViewKey,
-		Password:      item.Password,
+		PasswordHash:  item.PasswordHash,
+		PasswordSalt:  item.PasswordSalt,
 		PasswordScope: item.PasswordScope,
-		Content:       item.Content,
+		// Never write legacy plaintext fields (Password / EditPassword).
+		Content:    item.Content,
 		TTLSeconds: int64(item.TTL.Seconds()),
 		ExpiresAt:  item.ExpiresAt.Unix(),
 		Version:    item.Version,
 		Generation: item.Generation,
 		UpdatedAt:  item.UpdatedAt.Unix(),
 		UpdatedBy:  item.UpdatedBy,
+		History:    cloneHistory(item.History),
 	}
 	if item.Doc != nil {
 		snap.Items = item.Doc.Items()
 	}
 	version, generation := item.Version, item.Generation
+	passSalt := item.PasswordSalt
+	histLen := len(item.History)
 	s.mu.Unlock()
 
 	data, err := json.Marshal(snap)
@@ -185,6 +201,9 @@ func (s *Store) writeSnapshot(key string) {
 
 	// Re-check under the lock: a concurrent mutation makes this snapshot stale
 	// (rewrite next tick); a concurrent removal must delete the file outright.
+	// Password-only and history-only mutations may leave Version/Generation
+	// unchanged if a future path forgets to bump them — also compare salt and
+	// history length so those writes are not lost against a racing snapshot.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur, exists := s.items[key]
@@ -192,7 +211,8 @@ func (s *Store) writeSnapshot(key string) {
 		_ = os.Remove(path)
 		return
 	}
-	if cur.Version != version || cur.Generation != generation {
+	if cur.Version != version || cur.Generation != generation ||
+		cur.PasswordSalt != passSalt || len(cur.History) != histLen {
 		s.dirty[key] = true
 	}
 }
@@ -225,13 +245,28 @@ func (s *Store) loadPersisted() {
 		if snap.Key != key || snap.TTLSeconds <= 0 {
 			continue
 		}
-		// Legacy snapshots store the password under editPassword without a
-		// scope; treat those as edit-scope (historical behavior).
-		if snap.Password == "" {
-			snap.Password = snap.EditPassword
+		// Migrate legacy password fields into salt+hash.
+		// 1) Pre-hash snapshots stored plaintext under password / editPassword.
+		// 2) Pre-scope snapshots used editPassword with no scope → edit.
+		passHash := snap.PasswordHash
+		passSalt := snap.PasswordSalt
+		migratedPlain := false
+		if passHash == "" {
+			plain := snap.Password
+			if plain == "" {
+				plain = snap.EditPassword
+			}
+			if plain != "" {
+				salt, hash, err := hashPassword(plain)
+				if err == nil {
+					passSalt, passHash = salt, hash
+					migratedPlain = true
+				}
+			}
 		}
-		if snap.Password != "" && snap.PasswordScope == "" {
-			snap.PasswordScope = model.PasswordScopeEdit
+		scope := snap.PasswordScope
+		if passHash != "" && scope == "" {
+			scope = model.PasswordScopeEdit
 		}
 		expiresAt := time.Unix(snap.ExpiresAt, 0)
 		if !expiresAt.After(now) {
@@ -257,7 +292,11 @@ func (s *Store) loadPersisted() {
 			s.mu.Unlock()
 			break
 		}
-		newBytes := estimateBytes(snap.Content, doc.Len())
+		hist := cloneHistory(snap.History)
+		if len(hist) > MaxHistoryEntries {
+			hist = append([]model.HistoryEntry(nil), hist[len(hist)-MaxHistoryEntries:]...)
+		}
+		newBytes := estimateBytes(snap.Content, doc.Len()) + historyBytes(hist)
 		if s.total+newBytes > s.maxTotal {
 			// Keep the file on disk; skip loading under the current budget.
 			s.mu.Unlock()
@@ -271,10 +310,12 @@ func (s *Store) loadPersisted() {
 			Version:       snap.Version,
 			Generation:    snap.Generation,
 			ViewKey:       snap.ViewKey,
-			Password:      snap.Password,
-			PasswordScope: snap.PasswordScope,
+			PasswordHash:  passHash,
+			PasswordSalt:  passSalt,
+			PasswordScope: scope,
 			UpdatedAt:     time.Unix(snap.UpdatedAt, 0),
 			UpdatedBy:     snap.UpdatedBy,
+			History:       hist,
 		}
 		if item.Generation > s.nextGeneration {
 			s.nextGeneration = item.Generation
@@ -282,6 +323,10 @@ func (s *Store) loadPersisted() {
 		s.items[key] = item
 		s.sizeBy[key] = newBytes
 		s.total += newBytes
+		// Rewrite snapshot without plaintext as soon as the flusher runs.
+		if migratedPlain {
+			s.markDirtyLocked(key)
+		}
 		s.mu.Unlock()
 	}
 }

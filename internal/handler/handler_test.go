@@ -736,10 +736,10 @@ func TestWebSocketNoOpsGapAfterCoalescedUpdates(t *testing.T) {
 
 	// Apply two batches back-to-back directly through the store, then ping
 	// once — the reader wakes a single time with lastVersion two behind.
-	if _, _, err := h.store.ApplyOps("gap", []crdt.Op{{Op: crdt.OpInsert, ID: "w:2", After: parent, Ch: "A"}}, 0, "w"); err != nil {
+	if _, _, err := h.store.ApplyOps("gap", []crdt.Op{{Op: crdt.OpInsert, ID: "w:2", After: parent, Ch: "A"}}, 0, "w", store.Auth{}); err != nil {
 		t.Fatal(err)
 	}
-	cur, _, err := h.store.ApplyOps("gap", []crdt.Op{{Op: crdt.OpInsert, ID: "w:3", After: "w:2", Ch: "B"}}, 0, "w")
+	cur, _, err := h.store.ApplyOps("gap", []crdt.Op{{Op: crdt.OpInsert, ID: "w:3", After: "w:2", Ch: "B"}}, 0, "w", store.Auth{})
 	if err != nil {
 		t.Fatal(err)
 	}

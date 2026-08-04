@@ -303,6 +303,71 @@ func TestUploadDisabledWithoutPassword(t *testing.T) {
 	}
 }
 
+// View-scoped rooms gate file upload/list on the room password, not only
+// admin/file passwords.
+func TestViewPasswordGatesFileUploadAndList(t *testing.T) {
+	h := newFileTestHandler("admin-secret")
+	mux := h.Routes()
+
+	// Create room + lock with view scope.
+	putReq := httptest.NewRequest(http.MethodPut, "/api/clipboard/vfiles", strings.NewReader(
+		`{"content":"secret","ttlSeconds":3600}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	putRes := httptest.NewRecorder()
+	mux.ServeHTTP(putRes, putReq)
+	if putRes.Code != http.StatusOK {
+		t.Fatalf("create room = %d", putRes.Code)
+	}
+	pwBody := strings.NewReader(`{"password":"room-pw","scope":"view"}`)
+	pwReq := httptest.NewRequest(http.MethodPut, "/api/clipboard/vfiles/password", pwBody)
+	pwReq.Header.Set("Content-Type", "application/json")
+	pwRes := httptest.NewRecorder()
+	mux.ServeHTTP(pwRes, pwReq)
+	if pwRes.Code != http.StatusOK {
+		t.Fatalf("set password = %d body %s", pwRes.Code, pwRes.Body.String())
+	}
+
+	// Enable upload with admin + room password.
+	setBody := strings.NewReader(`{"fileUploadEnabled":true,"adminPassword":"admin-secret"}`)
+	setReq := httptest.NewRequest(http.MethodPut, "/api/clipboard/vfiles/settings", setBody)
+	setReq.Header.Set("Content-Type", "application/json")
+	setReq.Header.Set("X-Goclip-Password", "room-pw")
+	setRes := httptest.NewRecorder()
+	mux.ServeHTTP(setRes, setReq)
+	if setRes.Code != http.StatusOK {
+		t.Fatalf("enable upload = %d body %s", setRes.Code, setRes.Body.String())
+	}
+
+	// List without room password → 401.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/clipboard/vfiles/files", nil)
+	listRes := httptest.NewRecorder()
+	mux.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusUnauthorized {
+		t.Fatalf("list without room password = %d, want 401", listRes.Code)
+	}
+
+	// Upload without room password → 401 (even with file password + enabled room).
+	body, ctype := multipartBody(t, "", "file-pw", "a.txt", []byte("data"))
+	upReq := httptest.NewRequest(http.MethodPost, "/api/clipboard/vfiles/files", body)
+	upReq.Header.Set("Content-Type", ctype)
+	upRes := httptest.NewRecorder()
+	mux.ServeHTTP(upRes, upReq)
+	if upRes.Code != http.StatusUnauthorized {
+		t.Fatalf("upload without room password = %d, want 401; body %s", upRes.Code, upRes.Body.String())
+	}
+
+	// Upload with room password → 201.
+	body2, ctype2 := multipartBody(t, "", "file-pw", "a.txt", []byte("data"))
+	upReq2 := httptest.NewRequest(http.MethodPost, "/api/clipboard/vfiles/files", body2)
+	upReq2.Header.Set("Content-Type", ctype2)
+	upReq2.Header.Set("X-Goclip-Password", "room-pw")
+	upRes2 := httptest.NewRecorder()
+	mux.ServeHTTP(upRes2, upReq2)
+	if upRes2.Code != http.StatusCreated {
+		t.Fatalf("upload with room password = %d, want 201; body %s", upRes2.Code, upRes2.Body.String())
+	}
+}
+
 func TestFileChangesBroadcastOnWebSocket(t *testing.T) {
 	staticFS, _ := fs.Sub(testStatic, "testdata")
 	files := store.NewFileStore(store.WithFileRoot(t.TempDir()))

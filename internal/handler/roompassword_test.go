@@ -438,3 +438,313 @@ func TestRoomPasswordInvalidScopeRejected(t *testing.T) {
 		t.Fatalf("invalid scope = %d %v, want 400", res.StatusCode, out)
 	}
 }
+
+// After a successful view-scope auth, rotating the password must invalidate
+// the WS session: content is withheld again and ops without re-auth fail.
+func TestViewPasswordWSAuthInvalidatedOnRotate(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/rotatews", bytes.NewBufferString(saveJSON("private", 3600)))
+	putRes, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRes.Body.Close()
+	putPassword(t, srv.URL, "rotatews", map[string]any{"password": "alpha", "scope": "view"})
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/rotatews/ws?clientId=sticky"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	waitForState(t, conn) // locked
+	if err := conn.WriteJSON(map[string]any{"type": "auth", "password": "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	st := waitForState(t, conn)
+	if c, _ := st["content"].(string); c != "private" {
+		t.Fatalf("post-auth content = %q, want private", c)
+	}
+
+	// Rotate to a new password (requires currentPassword).
+	res, out := putPassword(t, srv.URL, "rotatews", map[string]any{
+		"password": "beta", "currentPassword": "alpha", "scope": "view",
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("rotate = %d %v, want 200", res.StatusCode, out)
+	}
+
+	// Broker ping + auth flip should push a re-locked state (password rotate
+	// does not bump document version, so the handler forces a full snapshot
+	// when session auth becomes false).
+	st = waitForState(t, conn)
+	if st["passwordRequired"] != true {
+		t.Fatalf("post-rotate state = %v, want passwordRequired", st)
+	}
+	if c, _ := st["content"].(string); c != "" {
+		t.Fatalf("post-rotate state leaked content: %q", c)
+	}
+
+	// Ops without re-auth must fail.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "ops",
+		"seq":  42,
+		"ops": []map[string]any{
+			{"op": "ins", "id": "sticky:1", "after": "", "ch": "X"},
+		},
+		"ttlSeconds": 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ack := waitForAck(t, conn)
+	if ack["error"] != "view password required" {
+		t.Fatalf("post-rotate ops ack = %v, want view password required", ack)
+	}
+
+	// Re-auth with the new password unlocks again.
+	if err := conn.WriteJSON(map[string]any{"type": "auth", "password": "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	st = waitForState(t, conn)
+	if st["passwordRequired"] == true {
+		t.Fatalf("still locked after re-auth with new password: %v", st)
+	}
+	if st["content"] != "private" {
+		t.Fatalf("re-auth content = %q, want private", st["content"])
+	}
+}
+
+// Unauthenticated clients must not inject cursor/presence into view-protected rooms.
+func TestViewPasswordWSCursorRejectedUnauthed(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/curroom", bytes.NewBufferString(saveJSON("hi", 3600)))
+	putRes, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRes.Body.Close()
+	putPassword(t, srv.URL, "curroom", map[string]any{"password": "gate", "scope": "view"})
+
+	// Authed peer.
+	wsA := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/curroom/ws?clientId=alice"
+	connA, _, err := websocket.DefaultDialer.Dial(wsA, nil)
+	if err != nil {
+		t.Fatalf("dial alice: %v", err)
+	}
+	defer connA.Close()
+	waitForState(t, connA)
+	if err := connA.WriteJSON(map[string]any{"type": "auth", "password": "gate"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, connA)
+
+	// Unauthed peer tries to plant a cursor.
+	wsB := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/curroom/ws?clientId=bob"
+	connB, _, err := websocket.DefaultDialer.Dial(wsB, nil)
+	if err != nil {
+		t.Fatalf("dial bob: %v", err)
+	}
+	defer connB.Close()
+	waitForState(t, connB)
+	if err := connB.WriteJSON(map[string]any{
+		"type": "cursor", "cursorPos": 1, "selectionEnd": 1, "color": "#ff0000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Give the server a moment, then ask alice for a sync/state and ensure
+	// bob is not in the cursor list. Presence ticks may also arrive.
+	time.Sleep(50 * time.Millisecond)
+	if err := connA.WriteJSON(map[string]any{"type": "sync"}); err != nil {
+		t.Fatal(err)
+	}
+	// Drain a few frames looking for cursors.
+	for i := 0; i < 10; i++ {
+		_ = connA.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		var msg map[string]any
+		if err := connA.ReadJSON(&msg); err != nil {
+			break
+		}
+		if msg["type"] != "cursor" && msg["type"] != "state" {
+			continue
+		}
+		raw, _ := msg["cursors"].([]any)
+		for _, c := range raw {
+			m, _ := c.(map[string]any)
+			if m["clientId"] == "bob" {
+				t.Fatalf("unauthenticated cursor was accepted: %v", m)
+			}
+		}
+	}
+}
+
+// PUT /password wrong currentPassword shares the passFailTracker budget with
+// GET/save so this endpoint cannot be used to brute-force the room secret.
+func TestEditPasswordPutFailBudget(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/pbf", bytes.NewBufferString(saveJSON("body", 3600)))
+	putRes, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRes.Body.Close()
+	putPassword(t, srv.URL, "pbf", map[string]any{"password": "real-pass", "scope": "edit"})
+
+	// Exhaust the budget without paying bcrypt on each try.
+	for i := 0; i < passFailMax; i++ {
+		h.recordPasswordFailureIP("127.0.0.1", "pbf")
+	}
+	res, out := putPassword(t, srv.URL, "pbf", map[string]any{
+		"password": "new-pass", "currentPassword": "wrong", "scope": "edit",
+	})
+	if res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("PUT /password after budget exhaust = %d (%v), want 429", res.StatusCode, out)
+	}
+	// Room must still be locked with the original password.
+	writeBody, _ := json.Marshal(map[string]any{"content": "ok", "ttlSeconds": 3600, "password": "real-pass"})
+	// Clear budget so a legitimate write can proceed from a "new" perspective:
+	// success path is not under test here — only that brute force was blocked.
+	h.recordPasswordSuccessIP("127.0.0.1", "pbf")
+	writeReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/pbf", bytes.NewReader(writeBody))
+	writeRes, err := http.DefaultClient.Do(writeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRes.Body.Close()
+	if writeRes.StatusCode != http.StatusOK {
+		t.Fatalf("write with real password after block clear = %d, want 200", writeRes.StatusCode)
+	}
+}
+
+// WebSocket auth password checks must use the same fail budget as HTTP.
+func TestWSAuthFailBudget(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/wsbf", bytes.NewBufferString(saveJSON("hidden", 3600)))
+	putRes, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRes.Body.Close()
+	putPassword(t, srv.URL, "wsbf", map[string]any{"password": "view-pass", "scope": "view"})
+
+	for i := 0; i < passFailMax; i++ {
+		h.recordPasswordFailureIP("127.0.0.1", "wsbf")
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/clipboard/wsbf/ws?clientId=attacker"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Drain initial state.
+	var st map[string]any
+	if err := conn.ReadJSON(&st); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "auth", "seq": 1, "password": "view-pass"}); err != nil {
+		t.Fatal(err)
+	}
+	var ack map[string]any
+	if err := conn.ReadJSON(&ack); err != nil {
+		t.Fatal(err)
+	}
+	if ack["type"] != "ack" {
+		t.Fatalf("expected ack after blocked auth, got %v", ack)
+	}
+	errMsg, _ := ack["error"].(string)
+	if errMsg != "too many password attempts" {
+		t.Fatalf("blocked WS auth error = %q, want %q (full ack %v)", errMsg, "too many password attempts", ack)
+	}
+}
+
+// POST/PUT with setPassword claim-locks under the same write (no unlocked window).
+func TestSaveSetPasswordAtomic(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"content": "sealed", "ttlSeconds": 3600, "clientId": "cli",
+		"password": "lock-me", "setPassword": true, "passwordScope": "edit",
+	})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/clipboard", bytes.NewReader(body))
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("create+lock status = %d", res.StatusCode)
+	}
+	var created model.ClipboardResponse
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Key == "" || !created.EditPasswordSet {
+		t.Fatalf("create response = %+v, want key + editPasswordSet", created)
+	}
+
+	// Write without password must fail immediately (never was open).
+	writeReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/"+created.Key,
+		bytes.NewBufferString(saveJSON("nope", 3600)))
+	writeRes, err := http.DefaultClient.Do(writeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRes.Body.Close()
+	if writeRes.StatusCode != http.StatusForbidden {
+		t.Fatalf("write without password = %d, want 403", writeRes.StatusCode)
+	}
+}
+
+// DELETE accepts ?password= like GET (roomPasswordFromRequest).
+func TestDeleteClipboardAcceptsQueryPassword(t *testing.T) {
+	h := newTestHandler()
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/clipboard/delq", bytes.NewBufferString(saveJSON("x", 3600)))
+	putRes, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRes.Body.Close()
+	putPassword(t, srv.URL, "delq", map[string]any{"password": "del-pass", "scope": "edit"})
+
+	// No password → 403.
+	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/clipboard/delq", nil)
+	delRes, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delRes.Body.Close()
+	if delRes.StatusCode != http.StatusForbidden {
+		t.Fatalf("delete without password = %d, want 403", delRes.StatusCode)
+	}
+
+	// Query password → 204.
+	delReq2, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/clipboard/delq?password=del-pass", nil)
+	delRes2, err := http.DefaultClient.Do(delReq2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delRes2.Body.Close()
+	if delRes2.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete with ?password= = %d, want 204", delRes2.StatusCode)
+	}
+}

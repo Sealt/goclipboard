@@ -12,17 +12,30 @@
   --danger-line: #e8b4ae;
   --danger-hover: #fdf2f1;
   --ok: #1a7f37;
+  --ok-soft: #e8f5ec;
   --warn: #9a6700;
+  --warn-soft: #fef6e7;
   --err: #cf222e;
+  --err-soft: #fdecec;
   --up: #0969da;
   --down: #1a7f37;
   --upload: #2a7a4b;
   --placeholder: #aaa;
   --path-hover: rgba(0, 0, 0, 0.04);
   --drag-bg: #f0f6ff;
-  --backdrop: rgba(20, 24, 28, 0.42);
+  --backdrop: rgba(15, 15, 15, 0.45);
   --shadow: rgba(0, 0, 0, 0.16);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
   --card-text: #fff;
+  --primary: #18181b;
+  --primary-fg: #fafafa;
+  --primary-hover: #27272a;
+  --ring: rgba(24, 24, 27, 0.18);
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-lg: 12px;
   --pad-x: 20px;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -43,17 +56,27 @@
   --danger-line: rgba(229, 83, 75, 0.45);
   --danger-hover: rgba(229, 83, 75, 0.12);
   --ok: #3fb950;
+  --ok-soft: rgba(63, 185, 80, 0.12);
   --warn: #d29922;
+  --warn-soft: rgba(210, 153, 34, 0.12);
   --err: #f85149;
+  --err-soft: rgba(248, 81, 73, 0.12);
   --up: #58a6ff;
   --down: #3fb950;
   --upload: #3fb950;
   --placeholder: #6b7078;
   --path-hover: rgba(255, 255, 255, 0.07);
   --drag-bg: rgba(88, 166, 255, 0.10);
-  --backdrop: rgba(0, 0, 0, 0.62);
+  --backdrop: rgba(0, 0, 0, 0.72);
   --shadow: rgba(0, 0, 0, 0.55);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55), 0 6px 16px rgba(0, 0, 0, 0.35);
   --card-text: #1a1b1e;
+  --primary: #fafafa;
+  --primary-fg: #18181b;
+  --primary-hover: #e4e4e7;
+  --ring: rgba(250, 250, 250, 0.22);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -71,17 +94,27 @@
     --danger-line: rgba(229, 83, 75, 0.45);
     --danger-hover: rgba(229, 83, 75, 0.12);
     --ok: #3fb950;
+    --ok-soft: rgba(63, 185, 80, 0.12);
     --warn: #d29922;
+    --warn-soft: rgba(210, 153, 34, 0.12);
     --err: #f85149;
+    --err-soft: rgba(248, 81, 73, 0.12);
     --up: #58a6ff;
     --down: #3fb950;
     --upload: #3fb950;
     --placeholder: #6b7078;
     --path-hover: rgba(255, 255, 255, 0.07);
     --drag-bg: rgba(88, 166, 255, 0.10);
-    --backdrop: rgba(0, 0, 0, 0.62);
+    --backdrop: rgba(0, 0, 0, 0.72);
     --shadow: rgba(0, 0, 0, 0.55);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.25);
+    --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55), 0 6px 16px rgba(0, 0, 0, 0.35);
     --card-text: #1a1b1e;
+    --primary: #fafafa;
+    --primary-fg: #18181b;
+    --primary-hover: #e4e4e7;
+    --ring: rgba(250, 250, 250, 0.22);
   }
 }
 
@@ -304,12 +337,30 @@ button {
   color: var(--text);
   background: transparent;
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius);
   font: 500 13px/1 var(--sans);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 
 button:hover {
   background: var(--hover);
+}
+
+/* shadcn-style solid primary CTA */
+button.primary {
+  color: var(--primary-fg);
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+button.primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: var(--primary-fg);
+}
+
+button.primary:disabled {
+  opacity: 0.5;
 }
 
 button.danger {
@@ -329,7 +380,7 @@ button:disabled {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--text);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 
@@ -750,15 +801,26 @@ textarea {
 button.ghost {
   min-width: 0;
   color: var(--muted);
-  border-color: var(--line);
+  border-color: transparent;
+  background: transparent;
 }
 
 button.ghost:hover {
   color: var(--text);
   background: var(--hover);
+  border-color: transparent;
 }
 
-/* ── Password modal ──────────────────────────────────── */
+/* Compact secondary actions inside lists / rows */
+button.btn-sm {
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Dialog / modal (shadcn Dialog) ──────────────────── */
 
 .modal {
   position: fixed;
@@ -776,6 +838,11 @@ button.ghost:hover {
   z-index: 1100;
 }
 
+/* Snapshot preview stacks above the history list dialog. */
+#historyPreviewModal {
+  z-index: 1050;
+}
+
 .modal[hidden] {
   display: none !important;
 }
@@ -784,33 +851,108 @@ button.ghost:hover {
   position: absolute;
   inset: 0;
   background: var(--backdrop);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  animation: modal-backdrop-in 0.16s ease-out;
 }
 
 .modal-card {
   position: relative;
-  width: min(400px, 100%);
-  padding: 20px 20px 16px;
+  width: min(420px, 100%);
+  max-height: min(88vh, 720px);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 16px 48px var(--shadow);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: modal-card-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+
+/* Wider cards for list-heavy dialogs */
+#shareModal .modal-card {
+  width: min(460px, 100%);
+}
+
+#historyModal .modal-card {
+  width: min(480px, 100%);
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 20px 0;
+  flex: 0 0 auto;
+}
+
+.modal-header-text {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .modal-title {
-  margin: 0 0 6px;
-  font-size: 16px;
+  margin: 0;
+  font-size: 15px;
   font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  color: var(--text);
 }
 
 .modal-hint {
-  margin: 0 0 10px;
+  margin: 6px 0 0;
   color: var(--muted);
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .modal-hint:empty {
   display: none;
+}
+
+/* Absolute X close — shadcn DialogClose */
+.modal-close {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  margin: -4px -6px 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.modal-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.modal-close svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.modal-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .modal-files {
@@ -820,7 +962,7 @@ button.ghost:hover {
   max-height: 120px;
   overflow-y: auto;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--panel-2);
   font-size: 12px;
   font-family: var(--mono);
@@ -842,13 +984,14 @@ button.ghost:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .modal-lab {
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 13px;
+  font-weight: 500;
 }
 
 .modal-field input {
@@ -857,21 +1000,25 @@ button.ghost:hover {
   height: 36px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--panel);
   color: var(--text);
   font-size: 14px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .modal-field input:focus {
-  border-color: var(--text);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--ring);
+  outline: none;
 }
 
 .modal-error {
-  margin: 0 0 10px;
-  min-height: 1.2em;
-  font-size: 12px;
+  margin: 0 0 4px;
+  min-height: 0;
+  font-size: 12.5px;
   color: var(--err);
+  line-height: 1.4;
 }
 
 .modal-error:empty {
@@ -881,82 +1028,164 @@ button.ghost:hover {
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  padding: 0 20px 20px;
+  flex: 0 0 auto;
 }
 
 .modal-actions button {
   min-width: 72px;
+  height: 36px;
+  border-radius: var(--radius);
 }
 
-/* ── Toast notifications (top-right) ──────────────────── */
+.modal-actions button.ghost {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--panel);
+}
+
+.modal-actions button.ghost:hover {
+  background: var(--hover);
+}
+
+@keyframes modal-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Toast (sonner-inspired) ─────────────────────────── */
 
 .toast-wrap {
   position: fixed;
-  top: 16px;
-  right: 16px;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 2000;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
   pointer-events: none;
-  max-width: min(380px, calc(100vw - 32px));
+  width: min(380px, calc(100vw - 32px));
 }
 
 .toast {
   pointer-events: auto;
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
   max-width: 100%;
-  padding: 10px 12px 10px 14px;
+  padding: 12px 12px 12px 14px;
   background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--err);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px var(--shadow);
-  font-size: 13px;
-  line-height: 1.45;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  font-size: 13.5px;
+  line-height: 1.4;
   color: var(--text);
-  animation: toast-in 0.18s ease-out;
+  animation: toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.toast.ok {
-  border-left-color: var(--ok);
+.toast.ok .toast-icon {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.toast.err .toast-icon,
+.toast:not(.ok):not(.warn) .toast-icon {
+  color: var(--err);
+  background: var(--err-soft);
+}
+
+.toast.warn .toast-icon {
+  color: var(--warn);
+  background: var(--warn-soft);
 }
 
 .toast.leaving {
   opacity: 0;
-  transform: translateX(8px);
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transform: translateY(-8px) scale(0.96);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.toast-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toast-icon svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2.25;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .toast-text {
   flex: 1 1 auto;
   min-width: 0;
   word-break: break-word;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 .toast-close {
   flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
   border: none;
-  background: none;
-  padding: 0 2px;
-  font-size: 16px;
-  line-height: 1;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
   cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .toast-close:hover {
   color: var(--text);
+  background: var(--hover);
+}
+
+.toast-close svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateX(12px);
+    transform: translateY(-10px) scale(0.96);
   }
   to {
     opacity: 1;
@@ -979,28 +1208,37 @@ button.ghost:hover {
   padding: 0 12px;
   font-size: 12px;
   white-space: nowrap;
+  border-color: var(--line-strong);
+  color: var(--text);
 }
 
 .modal-scope {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  margin: 0 0 10px;
-  padding: 0 2px;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
 }
 
 .modal-scope-opt {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 13px;
   color: var(--text);
   cursor: pointer;
+  padding: 4px 2px;
+  border-radius: var(--radius-sm);
 }
 
 .modal-scope-opt input {
-  accent-color: var(--accent, #4f8cff);
+  accent-color: var(--primary);
   margin: 0;
+  width: 14px;
+  height: 14px;
 }
 
 .modal-scope-opt:hover {
@@ -1180,13 +1418,31 @@ button.ghost:hover {
     justify-content: flex-end;
   }
 
-  .modal-card {
-    padding: 16px;
+  .modal-header {
+    padding: 16px 16px 0;
+  }
+
+  .modal-body {
+    padding: 14px 16px;
+  }
+
+  .modal-actions {
+    padding: 0 16px 16px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .dot {
+    transition: none;
+  }
+
+  .modal-backdrop,
+  .modal-card,
+  .toast {
+    animation: none;
+  }
+
+  .toast.leaving {
     transition: none;
   }
 }
@@ -1204,7 +1460,7 @@ button.ghost:hover {
   font-size: 15px;
   line-height: 1;
   flex: 0 0 auto;
-  border-radius: 10px;
+  border-radius: var(--radius);
 }
 
 .icon-btn[disabled] {
@@ -1225,6 +1481,31 @@ button.ghost:hover {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* Language: same icon-btn chrome, monogram glyph instead of a globe.
+   Label is the locale you will switch *to* (中 when on EN, EN when on 中). */
+.icon-btn.lang-btn {
+  font-family: var(--sans);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.icon-btn.lang-btn .lang-mono {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  transform: translateY(0.5px);
+}
+
+/* Single-character 中 can sit a hair larger than two-letter EN */
+.icon-btn.lang-btn[data-next="zh"] .lang-mono {
+  font-size: 13px;
+  letter-spacing: 0;
+  font-weight: 650;
 }
 
 /* ── Read-only badge (right of the room number) ───────── */
@@ -1427,26 +1708,31 @@ button.ghost:hover {
 .share-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .share-qr-row {
   display: flex;
   align-items: center;
   gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel-2);
 }
 
 .share-qr-wrap {
   flex: 0 0 auto;
-  width: 168px;
-  height: 168px;
+  width: 140px;
+  height: 140px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius);
   padding: 8px;
+  box-shadow: var(--shadow-sm);
 }
 
 .share-qr-wrap svg,
@@ -1460,40 +1746,50 @@ button.ghost:hover {
   min-width: 0;
   color: var(--muted);
   font-size: 12.5px;
-  line-height: 1.5;
+  line-height: 1.55;
+  margin: 0;
 }
 
 .share-links {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .share-link-row {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
 .share-link-row .share-link-lab {
-  flex: 0 0 52px;
+  flex: 0 0 64px;
   align-self: center;
   color: var(--muted);
   font-size: 12px;
+  font-weight: 500;
 }
 
 .share-mode {
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 220px;
-  padding: 5px 8px;
+  max-width: 240px;
+  height: 34px;
+  padding: 0 10px;
   font: inherit;
   font-size: 13px;
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.share-mode:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--ring);
+  outline: none;
 }
 
 .share-link-value {
@@ -1501,8 +1797,8 @@ button.ghost:hover {
   min-width: 0;
   height: 34px;
   padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   background: var(--panel-2);
   color: var(--text);
   font-family: var(--mono);
@@ -1516,44 +1812,94 @@ button.ghost:hover {
 
 .share-link-row button {
   flex: 0 0 auto;
-  min-width: 56px;
+  min-width: 0;
   height: 34px;
-  padding: 0 10px;
+  padding: 0 12px;
   font-size: 12px;
+  border-radius: var(--radius);
 }
 
 .share-link-row button.share-mini {
   min-width: 0;
-  padding: 0 8px;
-  font-size: 11px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+.share-link-row button.share-mini:hover {
+  color: var(--text);
 }
 
 .copy-ok {
-  color: var(--ok);
+  color: var(--ok) !important;
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--line)) !important;
 }
 
 /* ── Version history modal ───────────────────────────── */
 
+.history-warn {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  background: var(--warn-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.history-clear-btn {
+  margin-right: auto;
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+
+.history-clear-btn:hover {
+  color: var(--danger);
+  background: var(--danger-hover);
+}
+
 .history-list {
   list-style: none;
-  margin: 0 0 12px;
+  margin: 0;
   padding: 0;
-  max-height: 300px;
+  max-height: min(360px, 52vh);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  /* room for focus rings */
+  margin: -2px;
+  padding: 2px;
 }
 
 .history-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
+  gap: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel-2);
+  border-radius: var(--radius);
+  background: var(--panel);
   min-width: 0;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.history-item:hover {
+  background: var(--panel-2);
+  border-color: var(--line-strong);
+}
+
+.history-item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.history-item.is-current {
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--line));
+  background: color-mix(in srgb, var(--primary) 4%, var(--panel));
 }
 
 .history-item .history-meta {
@@ -1561,35 +1907,102 @@ button.ghost:hover {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .history-item .history-when {
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12.5px;
   font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.history-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--primary-fg);
+  background: var(--primary);
+  line-height: 1;
+}
+
+.history-ver {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 11.5px;
 }
 
 .history-item .history-preview {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
   font-family: var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.35;
 }
 
 .history-empty {
   color: var(--muted);
   font-size: 13px;
   text-align: center;
-  padding: 18px 0;
+  padding: 36px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  line-height: 1.5;
 }
 
+.history-empty-title {
+  display: block;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+/* Footer actions sit in .modal-actions; keep alias for safety */
 .history-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+}
+
+/* ── History snapshot quick-preview dialog ───────────── */
+
+#historyPreviewModal .history-preview-card {
+  width: min(560px, 100%);
+  max-height: min(88vh, 720px);
+}
+
+.history-preview-body-wrap {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.history-preview-body {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: min(52vh, 420px);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  tab-size: 2;
 }
 
 /* ── Mobile tweaks for the new controls ──────────────── */
@@ -1601,13 +2014,27 @@ button.ghost:hover {
     min-width: 32px;
   }
 
+  .toast-wrap {
+    top: 12px;
+    width: calc(100vw - 24px);
+  }
+
   .share-qr-row {
     flex-direction: column;
     align-items: center;
+    text-align: center;
   }
 
   .share-qr-note {
     text-align: center;
+  }
+
+  .share-link-row {
+    flex-wrap: wrap;
+  }
+
+  .share-link-row .share-link-lab {
+    flex: 0 0 100%;
   }
 
   .preview-pane {

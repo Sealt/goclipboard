@@ -3,8 +3,6 @@ package store
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -779,27 +777,12 @@ func randomFileID() (string, error) {
 }
 
 func hashFilePassword(password string) (saltHex, hashHex string, err error) {
-	var salt [16]byte
-	if _, err := rand.Read(salt[:]); err != nil {
-		return "", "", err
-	}
-	saltHex = hex.EncodeToString(salt[:])
-	sum := sha256.Sum256([]byte(saltHex + ":" + password))
-	hashHex = hex.EncodeToString(sum[:])
-	return saltHex, hashHex, nil
+	return hashPassword(password)
 }
 
 func verifyFilePassword(saltHex, hashHex, password string) bool {
-	if saltHex == "" || hashHex == "" || password == "" {
-		return false
-	}
 	if len(password) > MaxFilePasswordLen {
 		return false
 	}
-	sum := sha256.Sum256([]byte(saltHex + ":" + password))
-	want := hex.EncodeToString(sum[:])
-	if len(want) != len(hashHex) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(want), []byte(hashHex)) == 1
+	return verifyPassword(saltHex, hashHex, password)
 }

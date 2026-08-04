@@ -27,18 +27,33 @@ type Clipboard struct {
 	// server-side). Note: the view URL contains the room key in its path, so
 	// this guards against accidental edits, not against a determined holder
 	// of the view link.
-	ViewKey   string
-	// Password, when set, protects the room. PasswordScope decides what it
-	// gates: PasswordScopeEdit locks writes only (reads stay open — legacy
-	// behavior); PasswordScopeView locks reads and writes, i.e. the password
-	// must be presented to view the content at all. The password is chosen
-	// by the client that locks the room and never sent back in any response,
-	// so link holders cannot obtain it by stripping ?view=true — the server
-	// rejects their reads/writes outright.
-	Password      string
+	ViewKey string
+	// PasswordHash + PasswordSalt store a password KDF hash (bcrypt) and a
+	// random salt used as a non-secret session credential (never the
+	// plaintext). Legacy snapshots may still carry SHA-256(salt:password)
+	// digests, which remain verifiable. PasswordScope decides what the
+	// password gates: PasswordScopeEdit locks writes only (reads stay open —
+	// legacy behavior); PasswordScopeView locks reads and writes. The
+	// plaintext is chosen by the client that locks the room and never
+	// returned in any response.
+	PasswordHash  string
+	PasswordSalt  string
 	PasswordScope string // "" | "edit" | "view" ("" on a locked room = "edit")
 	UpdatedAt     time.Time
 	UpdatedBy     string
+	// History is a server-side trail of content snapshots so any browser
+	// can restore prior states. Newest is last; capped by the store.
+	History []HistoryEntry
+}
+
+// HistoryEntry is one point-in-time content snapshot for a room.
+type HistoryEntry struct {
+	Text    string `json:"text"`
+	Version int64  `json:"version"`
+	// At is unix milliseconds (matches Date.now() on the client).
+	At     int64  `json:"at"`
+	By     string `json:"by,omitempty"`
+	Manual bool   `json:"manual,omitempty"`
 }
 
 // Password scopes.
@@ -75,14 +90,23 @@ type ClipboardResponse struct {
 	// only, legacy) or "view" (reads and writes). Empty when unlocked.
 	PasswordScope string `json:"passwordScope,omitempty"`
 	Exists        bool   `json:"exists"`
-	UpdatedBy       string `json:"updatedBy,omitempty"`
+	UpdatedBy     string `json:"updatedBy,omitempty"`
 }
 
 type SaveRequest struct {
 	Content    string `json:"content"`
 	TTLSeconds int64  `json:"ttlSeconds"`
 	// Password is required when the room is locked with an edit password.
+	// With SetPassword, it is also the secret used to claim-lock an unlocked room.
 	Password string `json:"password,omitempty"`
+	// SetPassword asks the server to claim-lock an unlocked room with Password
+	// under the same write as the content (atomic create-and-lock). Ignored
+	// when Password is empty or the room is already locked. Web clients leave
+	// this false so a remembered password cannot re-lock after an unlock.
+	SetPassword bool `json:"setPassword,omitempty"`
+	// PasswordScope is used only when SetPassword is true: "edit" | "view".
+	// Empty defaults to "edit".
+	PasswordScope string `json:"passwordScope,omitempty"`
 	// BaseVersion > 0 requests optimistic concurrency: the save is rejected
 	// with 409 (plus current state) unless the stored version still matches,
 	// so offline/REST clients can merge instead of blindly overwriting.
@@ -156,9 +180,14 @@ type CursorEvent struct {
 	Cursors []CursorInfo `json:"cursors"`
 }
 
+// RoomPasswordSet reports whether the room has a lock (hash present).
+func (item Clipboard) RoomPasswordSet() bool {
+	return item.PasswordHash != ""
+}
+
 func ResponseFromClipboard(key string, item Clipboard, exists bool) ClipboardResponse {
 	scope := ""
-	if item.Password != "" {
+	if item.RoomPasswordSet() {
 		scope = PasswordScopeOf(item.PasswordScope)
 	}
 	return ClipboardResponse{
@@ -169,7 +198,7 @@ func ResponseFromClipboard(key string, item Clipboard, exists bool) ClipboardRes
 		Version:         item.Version,
 		Generation:      item.Generation,
 		ViewKey:         item.ViewKey,
-		EditPasswordSet: item.Password != "",
+		EditPasswordSet: item.RoomPasswordSet(),
 		PasswordScope:   scope,
 		Exists:          exists,
 		UpdatedBy:       item.UpdatedBy,

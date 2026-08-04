@@ -67,12 +67,13 @@ func printUsage(w io.Writer) {
 
 Usage:
   goclipboard [serve]                 start the web server (default)
-  goclipboard push [-url U] [-ttl D] [-key K] [-v] [file]
+  goclipboard push [-url U] [-ttl D] [-key K] [-password P] [-v] [file]
       Push stdin (or file) to a room and print the room URL.
-      -url   server base URL (env GOCLIPBOARD_URL, default http://localhost:8080)
-      -ttl   lifetime: 30m, 2h, 1d, or plain seconds (default 1h)
-      -key   room key to write; server generates one when omitted
-      -v     also print the read-only view link (stderr)
+      -url       server base URL (env GOCLIPBOARD_URL, default http://localhost:8080)
+      -ttl       lifetime: 30m, 2h, 1d, or plain seconds (default 1h)
+      -key       room key to write; server generates one when omitted
+      -password  edit password: unlocks locked rooms; on unlocked rooms claim-locks atomically with the write
+      -v         also print the read-only view link (stderr)
   goclipboard pull [-url U] [-o file] [-password P] <url|key>
       Print room content to stdout (or write to -o file).
       -password  room password (required for view-protected rooms)
@@ -116,12 +117,20 @@ func runPush(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	body, _ := json.Marshal(map[string]any{
+	// password authorizes writes to locked rooms. setPassword claim-locks an
+	// unlocked room under the same write so content never sits unlocked
+	// between a POST/PUT and a follow-up /password (race with concurrent readers).
+	payload := map[string]any{
 		"content":    content,
 		"ttlSeconds": ttlSeconds,
 		"clientId":   "cli",
-		"password":   *password,
-	})
+	}
+	if pw := strings.TrimSpace(*password); pw != "" {
+		payload["password"] = pw
+		payload["setPassword"] = true
+		payload["passwordScope"] = "edit"
+	}
+	body, _ := json.Marshal(payload)
 
 	baseURL := baseURLOf(*base)
 	var respURL string

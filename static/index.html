@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GoClipboard</title>
     <!-- bump ?v= when static assets change so CF/browser don't mix old JS with new HTML -->
-    <link rel="stylesheet" href="/static/styles.css?v=20260804l">
+    <link rel="stylesheet" href="/static/styles.css?v=20260804t">
     <link id="hljsTheme" rel="stylesheet" href="/static/vendor/highlight.github.css">
   </head>
   <body>
@@ -59,7 +59,9 @@
               <button id="shareBtn" type="button" class="icon-btn" title="分享链接" aria-label="分享链接">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
               </button>
-              <button id="langBtn" type="button" class="icon-btn" title="语言" aria-label="语言">EN</button>
+              <button id="langBtn" type="button" class="icon-btn lang-btn" title="语言" aria-label="语言" data-lang="zh">
+                <span class="lang-mono" aria-hidden="true">EN</span>
+              </button>
               <button id="themeBtn" type="button" class="icon-btn" title="切换主题" aria-label="切换主题">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
               </button>
@@ -103,24 +105,33 @@
     <div id="passwordModal" class="modal" hidden>
       <div class="modal-backdrop" data-modal-dismiss></div>
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-        <h3 id="modalTitle" class="modal-title" data-i18n="输入密码">输入密码</h3>
-        <p id="modalHint" class="modal-hint"></p>
-        <ul id="modalFileNames" class="modal-files"></ul>
-        <label class="modal-field">
-          <span id="modalPasswordLab" class="modal-lab" data-i18n="密码">密码</span>
-          <div class="modal-password-row">
-            <input id="modalPassword" type="password" autocomplete="current-password" data-i18n-placeholder="密码" placeholder="密码">
-            <button id="modalPasswordGen" type="button" class="ghost" hidden data-i18n="重新生成">重新生成</button>
+        <div class="modal-header">
+          <div class="modal-header-text">
+            <h3 id="modalTitle" class="modal-title" data-i18n="输入密码">输入密码</h3>
+            <p id="modalHint" class="modal-hint"></p>
           </div>
-        </label>
-        <div id="modalScopeWrap" class="modal-scope" hidden>
-          <label class="modal-scope-opt"><input type="radio" name="roomPassScope" value="edit" checked><span data-i18n="仅编辑需要密码">仅编辑需要密码</span></label>
-          <label class="modal-scope-opt"><input type="radio" name="roomPassScope" value="view"><span data-i18n="查看和编辑都需要密码">查看和编辑都需要密码</span></label>
+          <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+          </button>
         </div>
-        <p id="modalError" class="modal-error" role="alert"></p>
+        <div class="modal-body">
+          <ul id="modalFileNames" class="modal-files"></ul>
+          <label class="modal-field">
+            <span id="modalPasswordLab" class="modal-lab" data-i18n="密码">密码</span>
+            <div class="modal-password-row">
+              <input id="modalPassword" type="password" autocomplete="current-password" data-i18n-placeholder="密码" placeholder="密码">
+              <button id="modalPasswordGen" type="button" class="ghost" hidden data-i18n="重新生成">重新生成</button>
+            </div>
+          </label>
+          <div id="modalScopeWrap" class="modal-scope" hidden>
+            <label class="modal-scope-opt"><input type="radio" name="roomPassScope" value="edit" checked><span data-i18n="仅编辑需要密码">仅编辑需要密码</span></label>
+            <label class="modal-scope-opt"><input type="radio" name="roomPassScope" value="view"><span data-i18n="查看和编辑都需要密码">查看和编辑都需要密码</span></label>
+          </div>
+          <p id="modalError" class="modal-error" role="alert"></p>
+        </div>
         <div class="modal-actions">
           <button id="modalCancel" type="button" class="ghost" data-i18n="取消">取消</button>
-          <button id="modalConfirm" type="button" data-i18n="确认">确认</button>
+          <button id="modalConfirm" type="button" class="primary" data-i18n="确认">确认</button>
         </div>
       </div>
     </div>
@@ -129,32 +140,41 @@
     <div id="shareModal" class="modal" hidden>
       <div class="modal-backdrop" data-modal-dismiss></div>
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="shareTitle">
-        <h3 id="shareTitle" class="modal-title">分享链接</h3>
-        <p id="shareHint" class="modal-hint"></p>
-        <div class="share-body">
-          <div class="share-qr-row">
-            <div class="share-qr-wrap" id="shareQrWrap"></div>
-            <p id="shareQrNote" class="share-qr-note"></p>
+        <div class="modal-header">
+          <div class="modal-header-text">
+            <h3 id="shareTitle" class="modal-title" data-i18n="分享链接">分享链接</h3>
+            <p id="shareHint" class="modal-hint"></p>
           </div>
-          <div class="share-links">
-            <div class="share-link-row">
-              <span class="share-link-lab" data-i18n="房间链接">房间链接</span>
-              <span class="share-link-value" id="shareRoomUrl"></span>
-              <button id="shareRoomCopy" type="button">复制</button>
+          <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="share-body">
+            <div class="share-qr-row">
+              <div class="share-qr-wrap" id="shareQrWrap"></div>
+              <p id="shareQrNote" class="share-qr-note"></p>
             </div>
-            <div class="share-link-row">
-              <span class="share-link-lab" data-i18n="房间密码">房间密码</span>
-              <span class="share-link-value share-pass-value" id="sharePassValue"></span>
-              <button id="sharePassCopy" type="button" data-i18n="设置">设置</button>
-              <button id="sharePassReset" type="button" class="share-mini" hidden data-i18n="修改">修改</button>
-              <button id="sharePassUnlock" type="button" class="share-mini" hidden data-i18n="解除锁定">解除锁定</button>
-            </div>
-            <div class="share-link-row">
-              <span class="share-link-lab" data-i18n="打开方式">打开方式</span>
-              <select id="shareMode" class="share-mode" aria-label="打开方式" data-i18n-aria="打开方式">
-                <option value="plain" selected data-i18n="纯文本">纯文本</option>
-                <option value="md" data-i18n="Markdown 预览">Markdown 预览</option>
-              </select>
+            <div class="share-links">
+              <div class="share-link-row">
+                <span class="share-link-lab" data-i18n="房间链接">房间链接</span>
+                <span class="share-link-value" id="shareRoomUrl"></span>
+                <button id="shareRoomCopy" type="button" class="primary btn-sm">复制</button>
+              </div>
+              <div class="share-link-row">
+                <span class="share-link-lab" data-i18n="房间密码">房间密码</span>
+                <span class="share-link-value share-pass-value" id="sharePassValue"></span>
+                <button id="sharePassCopy" type="button" class="btn-sm" data-i18n="设置">设置</button>
+                <button id="sharePassReset" type="button" class="share-mini btn-sm" hidden data-i18n="修改">修改</button>
+                <button id="sharePassUnlock" type="button" class="share-mini btn-sm" hidden data-i18n="解除锁定">解除锁定</button>
+              </div>
+              <div class="share-link-row">
+                <span class="share-link-lab" data-i18n="打开方式">打开方式</span>
+                <select id="shareMode" class="share-mode" aria-label="打开方式" data-i18n-aria="打开方式">
+                  <option value="plain" selected data-i18n="纯文本">纯文本</option>
+                  <option value="md" data-i18n="Markdown 预览">Markdown 预览</option>
+                </select>
+              </div>
             </div>
           </div>
         </div>
@@ -168,12 +188,46 @@
     <div id="historyModal" class="modal" hidden>
       <div class="modal-backdrop" data-modal-dismiss></div>
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
-        <h3 id="historyTitle" class="modal-title">版本历史</h3>
-        <p id="historyHint" class="modal-hint"></p>
-        <ul id="historyList" class="history-list"></ul>
-        <div class="history-actions">
-          <button id="historyCapture" type="button" data-i18n="存档当前版本">存档当前版本</button>
+        <div class="modal-header">
+          <div class="modal-header-text">
+            <h3 id="historyTitle" class="modal-title" data-i18n="版本历史">版本历史</h3>
+            <p id="historyHint" class="modal-hint" data-i18n="点击条目预览，确认后再恢复">点击条目预览，确认后再恢复</p>
+          </div>
+          <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p id="historyWarn" class="history-warn" role="note" data-i18n="注意：历史会保留已删除/覆盖的内容，分享链接前请先清空或设密码">注意：历史会保留已删除/覆盖的内容，分享链接前请先清空或设密码</p>
+          <ul id="historyList" class="history-list"></ul>
+        </div>
+        <div class="modal-actions history-actions">
+          <button id="historyClear" type="button" class="ghost history-clear-btn" data-i18n="清空历史">清空历史</button>
           <button id="historyClose" type="button" class="ghost" data-i18n="关闭">关闭</button>
+          <button id="historyCapture" type="button" class="primary" data-i18n="存档当前版本">存档当前版本</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Snapshot quick preview (stacked above history) -->
+    <div id="historyPreviewModal" class="modal" hidden>
+      <div class="modal-backdrop" data-modal-dismiss></div>
+      <div class="modal-card history-preview-card" role="dialog" aria-modal="true" aria-labelledby="historyPreviewTitle">
+        <div class="modal-header">
+          <div class="modal-header-text">
+            <h3 id="historyPreviewTitle" class="modal-title" data-i18n="版本预览">版本预览</h3>
+            <p id="historyPreviewMeta" class="modal-hint"></p>
+          </div>
+          <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+        <div class="modal-body history-preview-body-wrap">
+          <pre id="historyPreviewBody" class="history-preview-body"></pre>
+        </div>
+        <div class="modal-actions">
+          <button id="historyPreviewClose" type="button" class="ghost" data-i18n="关闭">关闭</button>
+          <button id="historyPreviewRestore" type="button" class="primary" data-i18n="恢复此版本">恢复此版本</button>
         </div>
       </div>
     </div>
@@ -182,6 +236,6 @@
     <script src="/static/vendor/marked.min.js" defer></script>
     <script src="/static/vendor/highlight.min.js" defer></script>
     <script src="/static/vendor/qrcode.min.js" defer></script>
-    <script src="/static/app.js?v=20260804l" defer></script>
+    <script src="/static/app.js?v=20260804v" defer></script>
   </body>
 </html>

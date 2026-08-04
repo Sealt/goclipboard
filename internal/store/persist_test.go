@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,7 +118,7 @@ func TestPersistenceSurvivesOpBatch(t *testing.T) {
 	)
 	// Ops path (WS) must also persist: create + insert.
 	ops := []crdt.Op{{Op: crdt.OpInsert, ID: "site:1", After: "", Ch: "哈"}}
-	item, _, err := s1.ApplyOps("oproom", ops, time.Hour, "site")
+	item, _, err := s1.ApplyOps("oproom", ops, time.Hour, "site", Auth{})
 	if err != nil {
 		t.Fatalf("apply ops: %v", err)
 	}
@@ -188,6 +189,18 @@ func TestPersistencePasswordScopeRoundTrip(t *testing.T) {
 	}
 	s1.Close()
 
+	// On-disk snapshot must never contain the plaintext password.
+	raw, err := os.ReadFile(filepath.Join(dir, "pwroom.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "view-pass") {
+		t.Fatalf("snapshot still has plaintext password: %s", raw)
+	}
+	if !strings.Contains(string(raw), "passwordHash") || !strings.Contains(string(raw), "passwordSalt") {
+		t.Fatalf("snapshot missing hash fields: %s", raw)
+	}
+
 	s2 := New(
 		WithClock(func() time.Time { return now.Add(time.Minute) }),
 		WithPersistence(dir),
@@ -200,4 +213,27 @@ func TestPersistencePasswordScopeRoundTrip(t *testing.T) {
 	if !s2.PasswordOK("pwroom", "view-pass") {
 		t.Fatal("restored password must verify")
 	}
+	// In-memory item must not hold plaintext either.
+	item, ok := s2.Peek("pwroom")
+	if !ok || item.PasswordHash == "" || item.PasswordSalt == "" {
+		t.Fatalf("in-memory lock missing hash/salt: %+v ok=%v", item, ok)
+	}
+}
+
+// A persistence dir that cannot be created (a regular file sits on the path)
+// must degrade to in-memory mode instead of hanging Close() forever on a
+// writer goroutine that never started.
+func TestCloseAfterMkdirFailure(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(WithPersistence(filepath.Join(blocker, "rooms")))
+	// Store still serves from memory despite the failed persist dir.
+	if _, err := s.Save("mem", "still works", time.Hour, "a"); err != nil {
+		t.Fatalf("save after mkdir failure: %v", err)
+	}
+	s.Close() // must return promptly, not block on persistDone
 }
