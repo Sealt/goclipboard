@@ -204,16 +204,84 @@ func (h *Handler) handlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// {key}.json serves the room content as plain text for CLI-friendly
+	// fetching (curl http://host/AbC123.json | pbcopy). Keys may contain
+	// dots, so a key literally named "foo.json" is shadowed by this suffix
+	// rule on page URLs; it stays reachable via /api/clipboard/foo.json.
+	if strings.HasSuffix(r.URL.Path, ".json") {
+		if key, err := keyFromPagePath(strings.TrimSuffix(r.URL.Path, ".json")); err == nil {
+			h.handlePageText(w, r, key)
+			return
+		}
+	}
+
 	key, err := keyFromPagePath(r.URL.Path)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	_ = key
+
+	// Browsers get the SPA; non-browser clients (curl, wget, ...) get a
+	// short usage hint instead of an HTML page they cannot use.
+	if !isBrowserRequest(r) {
+		writePlain(w, http.StatusOK, pageHelpText(forwardedScheme(r), r.Host, key))
+		return
+	}
 
 	// HTML must always revalidate — it points at versioned JS/CSS.
 	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFileFS(w, r, h.static, "static/index.html")
+}
+
+// handlePageText serves a room's clipboard content as plain text
+// (GET /{key}.json), so terminals can pipe it straight into pbcopy.
+func (h *Handler) handlePageText(w http.ResponseWriter, r *http.Request, key string) {
+	item, ok := h.store.Get(key)
+	if !ok {
+		writePlain(w, http.StatusNotFound, "clipboard not found: "+key+" (wrong key or expired)\n")
+		return
+	}
+	if !h.viewPasswordGate(w, r, key) {
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(item.Content))
+}
+
+// isBrowserRequest reports whether the request looks like it comes from a
+// browser (the SPA is served to browsers; other clients get the help text).
+func isBrowserRequest(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.UserAgent()), "mozilla")
+}
+
+// forwardedScheme returns the external protocol of the request: the
+// X-Forwarded-Proto header when a reverse proxy (Cloudflare, nginx,
+// Caddy) set it, https when the Go server terminates TLS itself
+// (r.TLS is set), otherwise http.
+func forwardedScheme(r *http.Request) string {
+	if p := r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
+		return p
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// pageHelpText is the plain-text hint returned for bare room URLs requested
+// by non-browser clients. scheme is the external protocol (from
+// forwardedScheme) so the sample curl commands work on https deployments.
+func pageHelpText(scheme, host, key string) string {
+	return "goclipboard room — open this URL in a browser to view and edit.\n" +
+		"\n" +
+		"CLI access:\n" +
+		"  curl " + scheme + "://" + host + "/" + key + ".json                       → print content (plain text)\n" +
+		"  curl " + scheme + "://" + host + "/" + key + ".json -H 'X-Goclip-Password: …'  → view-protected rooms\n" +
+		"  goclipboard pull " + key + "\n" +
+		"\n" +
+		"Append .json to the room URL to fetch the content from a terminal.\n"
 }
 
 // handleCreateClipboard creates a room with a server-generated key (same body
@@ -356,25 +424,8 @@ func (h *Handler) handleGetClipboard(w http.ResponseWriter, r *http.Request, key
 
 	// View-protected rooms withhold content until the room password is
 	// presented (X-Goclip-Password header or ?password= query).
-	if h.viewProtected(key) {
-		if !h.allowPasswordAttempt(r, key) {
-			writeError(w, http.StatusTooManyRequests, "too many password attempts")
-			return
-		}
-		pw := roomPasswordFromRequest(r)
-		if !h.store.PasswordOK(key, pw) {
-			h.recordPasswordFailure(r, key)
-			msg := "view password required"
-			if pw != "" {
-				msg = "invalid view password"
-			}
-			writeJSON(w, http.StatusUnauthorized, struct {
-				Error         string `json:"error"`
-				PasswordScope string `json:"passwordScope"`
-			}{msg, model.PasswordScopeView})
-			return
-		}
-		h.recordPasswordSuccess(r, key)
+	if !h.viewPasswordGate(w, r, key) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, model.ResponseFromClipboard(key, item, true))
@@ -688,6 +739,35 @@ func (h *Handler) handleEditPassword(w http.ResponseWriter, r *http.Request, key
 func (h *Handler) viewProtected(key string) bool {
 	set, scope := h.store.PasswordInfo(key)
 	return set && scope == model.PasswordScopeView
+}
+
+// viewPasswordGate enforces the view-scope room password. It returns true
+// when the request may read the content; on failure it has already written
+// the error response (401, or 429 when the attempt budget is exhausted).
+// Used by both the JSON API and the {key}.json page fetch.
+func (h *Handler) viewPasswordGate(w http.ResponseWriter, r *http.Request, key string) bool {
+	if !h.viewProtected(key) {
+		return true
+	}
+	if !h.allowPasswordAttempt(r, key) {
+		writeError(w, http.StatusTooManyRequests, "too many password attempts")
+		return false
+	}
+	pw := roomPasswordFromRequest(r)
+	if !h.store.PasswordOK(key, pw) {
+		h.recordPasswordFailure(r, key)
+		msg := "view password required"
+		if pw != "" {
+			msg = "invalid view password"
+		}
+		writeJSON(w, http.StatusUnauthorized, struct {
+			Error         string `json:"error"`
+			PasswordScope string `json:"passwordScope"`
+		}{msg, model.PasswordScopeView})
+		return false
+	}
+	h.recordPasswordSuccess(r, key)
+	return true
 }
 
 // roomPasswordFromRequest extracts the room password from a request.
@@ -1621,6 +1701,16 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
+		_ = err
+	}
+}
+
+// writePlain writes a plain-text response body (used by CLI-friendly
+// endpoints; writeError stays JSON).
+func writePlain(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	if _, err := io.WriteString(w, body); err != nil {
 		_ = err
 	}
 }

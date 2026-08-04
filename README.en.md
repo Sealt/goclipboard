@@ -118,6 +118,19 @@ The response is the room's content and metadata (`content` / `ttlSeconds` / `exp
 
 `PUT` accepts an optional `baseVersion` for optimistic concurrency — a stale overwrite is rejected with `409` plus current state, so offline/REST clients can merge instead of clobbering.
 
+### Fetching content from a terminal (`.json` suffix)
+
+Appending `.json` to a room page URL returns the content as **plain text**, so terminals can pipe it straight into the clipboard:
+
+```sh
+curl http://localhost:8080/AbC123.json | pbcopy        # content straight into the clipboard
+curl http://localhost:8080/AbC123.json -H 'X-Goclip-Password: …'   # view-scoped rooms
+```
+
+- Curling a bare room URL (`http://localhost:8080/AbC123`) without a browser User-Agent (curl/wget/…) returns a short usage hint; browsers still get the interactive UI.
+- Keys may contain dots: a key literally ending in `.json` (e.g. `foo.json`) is shadowed by the suffix rule on page URLs — use `/api/clipboard/foo.json` for those.
+- View-scoped rooms also accept `-H 'X-Goclip-Password: …'` or `?password=…`.
+
 ### Room passwords
 
 The share dialog sets a room password (**type your own or regenerate**) and picks its scope:

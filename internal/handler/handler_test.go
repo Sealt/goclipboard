@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -250,6 +251,154 @@ func TestPageAndRootRoutes(t *testing.T) {
 	}
 	if rootRes.Header().Get("Location") == "" {
 		t.Fatal("root redirect should set Location")
+	}
+}
+
+func TestPageJSONContent(t *testing.T) {
+	h := newTestHandler()
+	handler := h.Routes()
+
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/clipboard/pjson", bytes.NewBufferString(saveJSON("plain text body", 3600)))
+	saveRes := httptest.NewRecorder()
+	handler.ServeHTTP(saveRes, saveReq)
+	if saveRes.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want 200", saveRes.Code)
+	}
+
+	// No User-Agent → the .json page URL must still serve plain text.
+	getReq := httptest.NewRequest(http.MethodGet, "/pjson.json", nil)
+	getRes := httptest.NewRecorder()
+	handler.ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("GET /pjson.json status = %d, want 200; body: %s", getRes.Code, getRes.Body.String())
+	}
+	if ct := getRes.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q, want text/plain", ct)
+	}
+	if got := getRes.Body.String(); got != "plain text body" {
+		t.Fatalf("body = %q, want %q", got, "plain text body")
+	}
+}
+
+func TestPageJSONMissing(t *testing.T) {
+	h := newTestHandler()
+	handler := h.Routes()
+
+	getReq := httptest.NewRequest(http.MethodGet, "/missing.json", nil)
+	getRes := httptest.NewRecorder()
+	handler.ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusNotFound {
+		t.Fatalf("GET /missing.json status = %d, want 404", getRes.Code)
+	}
+	if ct := getRes.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q, want text/plain", ct)
+	}
+	if !strings.Contains(getRes.Body.String(), "clipboard not found") {
+		t.Fatalf("404 body = %q, want a plain-text not-found message", getRes.Body.String())
+	}
+}
+
+func TestPageJSONViewProtected(t *testing.T) {
+	h := newTestHandler()
+	handler := h.Routes()
+
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/clipboard/vjson", bytes.NewBufferString(saveJSON("secret text", 3600)))
+	handler.ServeHTTP(httptest.NewRecorder(), saveReq)
+
+	pwBody, _ := json.Marshal(map[string]any{"password": "peek-pass", "scope": "view"})
+	pwReq := httptest.NewRequest(http.MethodPut, "/api/clipboard/vjson/password", bytes.NewBuffer(pwBody))
+	pwRes := httptest.NewRecorder()
+	handler.ServeHTTP(pwRes, pwReq)
+	if pwRes.Code != http.StatusOK {
+		t.Fatalf("set view password status = %d, want 200", pwRes.Code)
+	}
+
+	// Without the password → 401, plain text.
+	deniedReq := httptest.NewRequest(http.MethodGet, "/vjson.json", nil)
+	deniedRes := httptest.NewRecorder()
+	handler.ServeHTTP(deniedRes, deniedReq)
+	if deniedRes.Code != http.StatusUnauthorized {
+		t.Fatalf("GET .json without password = %d, want 401", deniedRes.Code)
+	}
+
+	// With X-Goclip-Password → 200 + content.
+	okReq := httptest.NewRequest(http.MethodGet, "/vjson.json", nil)
+	okReq.Header.Set("X-Goclip-Password", "peek-pass")
+	okRes := httptest.NewRecorder()
+	handler.ServeHTTP(okRes, okReq)
+	if okRes.Code != http.StatusOK || okRes.Body.String() != "secret text" {
+		t.Fatalf("GET .json with password = %d body %q, want 200 + content", okRes.Code, okRes.Body.String())
+	}
+}
+
+func TestPageHelpVsBrowser(t *testing.T) {
+	h := newTestHandler()
+	handler := h.Routes()
+
+	// Non-browser UA on a bare room URL → plain-text usage hint.
+	curlReq := httptest.NewRequest(http.MethodGet, "/room-1", nil)
+	curlReq.Header.Set("User-Agent", "curl/8.7.1")
+	curlRes := httptest.NewRecorder()
+	handler.ServeHTTP(curlRes, curlReq)
+	if curlRes.Code != http.StatusOK {
+		t.Fatalf("curl status = %d, want 200", curlRes.Code)
+	}
+	if ct := curlRes.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("curl content-type = %q, want text/plain", ct)
+	}
+	if body := curlRes.Body.String(); !strings.Contains(body, ".json") {
+		t.Fatalf("help body should mention .json, got: %q", body)
+	}
+	if body := curlRes.Body.String(); !strings.Contains(body, "curl http://") {
+		t.Fatalf("help body should default to http:// without X-Forwarded-Proto, got: %q", body)
+	}
+
+	// Same request behind an https reverse proxy → help shows https:// URLs.
+	httpsReq := httptest.NewRequest(http.MethodGet, "/room-1", nil)
+	httpsReq.Header.Set("User-Agent", "curl/8.7.1")
+	httpsReq.Header.Set("X-Forwarded-Proto", "https")
+	httpsRes := httptest.NewRecorder()
+	handler.ServeHTTP(httpsRes, httpsReq)
+	if body := httpsRes.Body.String(); !strings.Contains(body, "curl https://") {
+		t.Fatalf("help body should use https:// when X-Forwarded-Proto is https, got: %q", body)
+	}
+
+	// Direct TLS termination (no proxy headers, server terminates TLS) →
+	// https:// in help.
+	tlsReq := httptest.NewRequest(http.MethodGet, "/room-1", nil)
+	tlsReq.Header.Set("User-Agent", "curl/8.7.1")
+	tlsReq.TLS = &tls.ConnectionState{}
+	tlsRes := httptest.NewRecorder()
+	handler.ServeHTTP(tlsRes, tlsReq)
+	if body := tlsRes.Body.String(); !strings.Contains(body, "curl https://") {
+		t.Fatalf("help body should use https:// for direct TLS termination, got: %q", body)
+	}
+
+	// Browser UA on the same URL → the SPA HTML.
+	brReq := httptest.NewRequest(http.MethodGet, "/room-1", nil)
+	brReq.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+	brRes := httptest.NewRecorder()
+	handler.ServeHTTP(brRes, brReq)
+	if brRes.Code != http.StatusOK {
+		t.Fatalf("browser status = %d, want 200", brRes.Code)
+	}
+	if ct := brRes.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("browser content-type = %q, want text/html", ct)
+	}
+}
+
+func TestPageJSONMethodNotAllowed(t *testing.T) {
+	h := newTestHandler()
+	handler := h.Routes()
+
+	putReq := httptest.NewRequest(http.MethodPut, "/room-1.json", bytes.NewBufferString(saveJSON("x", 3600)))
+	putRes := httptest.NewRecorder()
+	handler.ServeHTTP(putRes, putReq)
+	if putRes.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT /room-1.json status = %d, want 405", putRes.Code)
+	}
+	if allow := putRes.Header().Get("Allow"); allow != http.MethodGet {
+		t.Fatalf("Allow header = %q, want %q", allow, http.MethodGet)
 	}
 }
 

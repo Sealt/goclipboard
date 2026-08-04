@@ -118,6 +118,19 @@ curl -X PUT localhost:8080/api/clipboard/AbC123 \
 
 `PUT` 支持可选的 `baseVersion` 乐观并发：过期覆盖会被拒绝并返回 `409`（附当前状态），离线/REST 客户端可以据此合并而不是盲目覆盖。
 
+### 终端直接取内容（`.json` 后缀）
+
+房间页面 URL 加 `.json` 后缀即返回**纯文本**内容，方便在终端里直接取用：
+
+```sh
+curl http://localhost:8080/AbC123.json | pbcopy        # 内容直接进剪贴板
+curl http://localhost:8080/AbC123.json -H 'X-Goclip-Password: …'   # 查看范围密码保护的房间
+```
+
+- 不带浏览器 UA（如 curl/wget）直接访问裸房间 URL（`http://localhost:8080/AbC123`）时，返回一段简短的用法提示；浏览器访问则照常打开编辑界面。
+- key 本身可以包含点：字面以 `.json` 结尾的 key（如 `foo.json`）在页面 URL 上会被后缀规则遮蔽，请改用 `/api/clipboard/foo.json`。
+- 查看范围密码保护的房间同样接受 `-H 'X-Goclip-Password: …'` 或 `?password=…`。
+
 ### 房间密码
 
 分享弹窗里可设置房间密码（**手动输入或一键重新生成**），并选择验证范围：
