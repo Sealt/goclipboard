@@ -4,9 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GoClipboard</title>
+    <!-- Room keys are arbitrary single path segments, so an undeclared icon
+         made the browser request /favicon.ico, which used to open a room. -->
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <meta name="robots" content="noindex, nofollow">
     <!-- bump ?v= when static assets change so CF/browser don't mix old JS with new HTML -->
-    <link rel="stylesheet" href="/static/styles.css?v=20260804t">
-    <link id="hljsTheme" rel="stylesheet" href="/static/vendor/highlight.github.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20261023e">
+    <!-- highlight.js theme is attached on first Markdown preview (see
+         ensureHljsTheme) so it does not cost a render-blocking round trip. -->
   </head>
   <body>
     <main class="app">
@@ -17,19 +22,25 @@
             <p class="brand-name">GoClipboard</p>
             <div class="path-row">
               <h1 id="roomTitle" class="path">/</h1>
+              <!-- Copying the room URL is the most common follow-up to
+                   opening a room; a dedicated button leaves the title's
+                   triple-click admin gesture untouched. -->
+              <button id="copyRoomBtn" type="button" class="path-copy" title="复制房间链接" aria-label="复制房间链接" data-i18n-aria="复制房间链接" aria-live="polite">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              </button>
             </div>
           </div>
 
           <div class="top-right">
-            <!-- Layer 1: status -->
+            <!-- Layer 1: expiry — the one piece of metadata worth a glance -->
             <div class="meta">
-              <span id="expiresText">尚未保存</span>
+              <span id="expiresText" data-tone="idle">尚未保存</span>
             </div>
 
             <!-- Layer 2: TTL + action buttons -->
             <div class="top-controls">
               <label class="ttl-field">
-                <span class="ttl-lab">TTL</span>
+                <span class="ttl-lab" data-i18n="有效期">有效期</span>
                 <div class="ttl-group">
                   <input id="ttlValue" type="number" min="1" inputmode="numeric" value="1" aria-label="TTL 数值" data-i18n-aria="TTL 数值">
                   <select id="ttlUnit" aria-label="TTL 单位" data-i18n-aria="TTL 单位">
@@ -39,36 +50,56 @@
                   </select>
                 </div>
               </label>
-              <button id="undoBtn" type="button" class="icon-btn" title="撤销" aria-label="撤销" disabled>
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
-              </button>
-              <button id="redoBtn" type="button" class="icon-btn" title="重做" aria-label="重做" disabled>
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-              </button>
-              <button id="previewBtn" type="button" class="icon-btn" title="Markdown 预览" aria-label="Markdown 预览">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-              </button>
-              <button id="historyBtn" type="button" class="icon-btn" title="版本历史" aria-label="版本历史">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-              </button>
-              <button id="shareBtn" type="button" class="icon-btn" title="分享链接" aria-label="分享链接">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-              </button>
-              <button id="langBtn" type="button" class="icon-btn lang-btn" title="语言" aria-label="语言" data-lang="zh">
-                <span class="lang-mono" aria-hidden="true">EN</span>
-              </button>
-              <button id="themeBtn" type="button" class="icon-btn" title="切换主题" aria-label="切换主题">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-              </button>
+              <!-- Grouped so phones can drop the whole toolbar onto its own
+                   row; keeping the buttons as flat siblings let flex shrink
+                   the TTL field to zero width. Document actions and app-wide
+                   utilities are separated so eight identical icons read as two
+                   short groups. -->
+              <div class="action-group">
+                <button id="undoBtn" type="button" class="icon-btn" title="撤销" aria-label="撤销" disabled>
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
+                </button>
+                <button id="redoBtn" type="button" class="icon-btn" title="重做" aria-label="重做" disabled>
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"/></svg>
+                </button>
+                <button id="previewBtn" type="button" class="icon-btn" title="Markdown 预览" aria-label="Markdown 预览" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+                <button id="historyBtn" type="button" class="icon-btn" title="版本历史" aria-label="版本历史">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+                </button>
+                <button id="shareBtn" type="button" class="icon-btn" title="分享链接" aria-label="分享链接">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></svg>
+                </button>
+                <button id="newRoomBtn" type="button" class="icon-btn" title="新建房间" aria-label="新建房间">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
+                </button>
+                <span class="action-sep" aria-hidden="true"></span>
+                <button id="langBtn" type="button" class="icon-btn lang-btn" title="语言" aria-label="语言" data-lang="zh">
+                  <span class="lang-mono" aria-hidden="true">EN</span>
+                </button>
+                <button id="themeBtn" type="button" class="icon-btn" title="切换主题" aria-label="切换主题">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
         <!-- Row 2: peers (scroll) · status · dots (pinned right) -->
         <div class="presence-row" id="presenceRow">
-          <div class="peer-tabs" id="peerTabs" aria-label="在线用户"></div>
+          <div class="peer-tabs" id="peerTabs" role="group" aria-label="在线用户" data-i18n-aria="在线用户"></div>
           <div class="presence-end">
-            <p id="status" class="status" role="status" aria-live="polite" data-tone="err">error</p>
+            <!-- Edit-locked rooms stay readable; this is the way in for
+                 writing, so reading is never interrupted by a prompt. -->
+            <button id="unlockEditBtn" type="button" class="unlock-chip" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <span data-i18n="只读 · 解锁编辑">只读 · 解锁编辑</span>
+            </button>
+            <p id="status" class="status" role="status" aria-live="polite" data-tone="pending">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span class="status-text">加载中…</span>
+            </p>
             <span class="dots" aria-hidden="true">
               <span id="dotUp" class="dot dot-up" title="发送"></span>
               <span id="dotDown" class="dot dot-down" title="接收"></span>
@@ -80,9 +111,43 @@
 
       <div class="editor-wrapper">
         <textarea id="content" spellcheck="false" data-i18n-placeholder="粘贴或输入文本，内容会自动保存 · 开启上传后可粘贴/拖入文件" placeholder="粘贴或输入文本，内容会自动保存 · 开启上传后可粘贴/拖入文件"></textarea>
+        <!-- First-run affordance: an empty textarea with a long placeholder
+             says what the box is, not what to do next. Hidden the moment the
+             room has any content or the user starts typing. -->
+        <div id="emptyHint" class="empty-hint" hidden>
+          <p class="empty-hint-title" data-i18n="直接粘贴或输入内容">直接粘贴或输入内容</p>
+          <p class="empty-hint-sub" data-i18n="内容实时同步给打开同一链接的人，到期自动销毁">内容实时同步给打开同一链接的人，到期自动销毁</p>
+          <div class="empty-hint-actions">
+            <button id="emptyPasteBtn" type="button" class="btn-sm" data-i18n="从剪贴板粘贴">从剪贴板粘贴</button>
+            <button id="emptyShareBtn" type="button" class="btn-sm" data-i18n="复制房间链接">复制房间链接</button>
+          </div>
+        </div>
         <div id="previewPane" class="preview-pane" hidden><div id="previewBody" class="md-body"></div></div>
+        <!-- Room gate: shown instead of the editor when the room needs a
+             password. One panel covers both scopes, so the user sees the lock
+             before typing instead of discovering it when a save is rejected. -->
+        <div id="roomLock" class="room-lock" hidden>
+          <form id="roomLockForm" class="room-lock-card" novalidate>
+            <div class="room-lock-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <h2 id="roomLockTitle" class="room-lock-title"></h2>
+            <p id="roomLockHint" class="room-lock-hint"></p>
+            <label class="room-lock-field">
+              <span class="sr-only" id="roomLockLabel"></span>
+              <input id="roomLockPassword" type="password" autocomplete="current-password" data-i18n-placeholder="密码" placeholder="密码">
+            </label>
+            <p id="roomLockError" class="room-lock-error" role="alert"></p>
+            <button id="roomLockSubmit" type="submit" class="primary room-lock-submit" data-i18n="解锁">解锁</button>
+          </form>
+        </div>
         <div id="cursorLayer" class="cursor-layer" aria-hidden="true"></div>
         <div id="cursorMirror" class="cursor-mirror" aria-hidden="true"></div>
+        <!-- Visual only: #status already announces state to screen readers. -->
+        <div id="loadingOverlay" class="loading-overlay" aria-hidden="true">
+          <span class="loading-spinner"></span>
+          <span id="loadingText" class="loading-text" data-i18n="正在加载剪贴板…">正在加载剪贴板…</span>
+        </div>
       </div>
 
       <!-- Hidden when empty; only lists existing files -->
@@ -106,7 +171,7 @@
             <p id="modalHint" class="modal-hint"></p>
           </div>
           <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </div>
         <div class="modal-body">
@@ -131,6 +196,23 @@
       </div>
     </div>
 
+    <!-- Generic confirm dialog (replaces window.confirm) -->
+    <div id="confirmModal" class="modal" hidden>
+      <div class="modal-backdrop" data-modal-dismiss></div>
+      <div class="modal-card confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+        <div class="modal-header">
+          <div class="modal-header-text">
+            <h3 id="confirmTitle" class="modal-title"></h3>
+            <p id="confirmMessage" class="modal-hint"></p>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="confirmCancel" type="button" class="ghost" data-i18n="取消">取消</button>
+          <button id="confirmOk" type="button" class="primary"></button>
+        </div>
+      </div>
+    </div>
+
     <!-- Share links + QR code -->
     <div id="shareModal" class="modal" hidden>
       <div class="modal-backdrop" data-modal-dismiss></div>
@@ -141,7 +223,7 @@
             <p id="shareHint" class="modal-hint"></p>
           </div>
           <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </div>
         <div class="modal-body">
@@ -189,7 +271,7 @@
             <p id="historyHint" class="modal-hint" data-i18n="点击条目预览，确认后再恢复">点击条目预览，确认后再恢复</p>
           </div>
           <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </div>
         <div class="modal-body">
@@ -214,7 +296,7 @@
             <p id="historyPreviewMeta" class="modal-hint"></p>
           </div>
           <button type="button" class="modal-close" data-modal-dismiss aria-label="关闭" data-i18n-aria="关闭">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </div>
         <div class="modal-body history-preview-body-wrap">
@@ -227,10 +309,10 @@
       </div>
     </div>
 
+    <!-- Markdown / syntax highlight / QR are only needed for the preview and
+         share dialogs, so app.js loads them on demand. Keeping them out of the
+         blocking set removes ~210 KB from the path to first content. -->
     <script src="/static/crdt.js?v=20260804j" defer></script>
-    <script src="/static/vendor/marked.min.js" defer></script>
-    <script src="/static/vendor/highlight.min.js" defer></script>
-    <script src="/static/vendor/qrcode.min.js" defer></script>
-    <script src="/static/app.js?v=20260804v" defer></script>
+    <script src="/static/app.js?v=20261023e" defer></script>
   </body>
 </html>

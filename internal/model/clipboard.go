@@ -124,6 +124,16 @@ var reservedKeys = map[string]bool{
 	"api":     true,
 	"static":  true,
 	"healthz": true,
+	// Well-known paths browsers and crawlers request on every origin. They
+	// used to be valid room keys, so /favicon.ico opened an empty room.
+	"favicon.ico":          true,
+	"favicon.svg":          true,
+	"apple-touch-icon.png": true,
+	"apple-touch-icon":     true,
+	"robots.txt":           true,
+	"sitemap.xml":          true,
+	"manifest.json":        true,
+	"manifest.webmanifest": true,
 }
 
 func ValidateKey(key string) (string, error) {

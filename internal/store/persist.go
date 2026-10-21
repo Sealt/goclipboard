@@ -35,17 +35,21 @@ type roomSnapshot struct {
 	PasswordScope string `json:"passwordScope,omitempty"`
 	// Password / EditPassword are legacy plaintext fields (pre-hash / pre-scope).
 	// Migrated to salt+hash on load and never written back.
-	Password     string               `json:"password,omitempty"`
-	EditPassword string               `json:"editPassword,omitempty"`
-	Content      string               `json:"content"`
-	TTLSeconds   int64                `json:"ttlSeconds"`
-	ExpiresAt    int64                `json:"expiresAt"` // unix seconds
-	Version      int64                `json:"version"`
-	Generation   int64                `json:"generation"`
-	UpdatedAt    int64                `json:"updatedAt"` // unix seconds
-	UpdatedBy    string               `json:"updatedBy,omitempty"`
-	Items        []crdt.Item          `json:"items"`
-	History      []model.HistoryEntry `json:"history,omitempty"`
+	Password     string      `json:"password,omitempty"`
+	EditPassword string      `json:"editPassword,omitempty"`
+	Content      string      `json:"content"`
+	TTLSeconds   int64       `json:"ttlSeconds"`
+	ExpiresAt    int64       `json:"expiresAt"` // unix seconds
+	Version      int64       `json:"version"`
+	Generation   int64       `json:"generation"`
+	UpdatedAt    int64       `json:"updatedAt"` // unix seconds
+	UpdatedBy    string      `json:"updatedBy,omitempty"`
+	Items        []crdt.Item `json:"items"`
+	// ItemsSite marks an elided linear-chain item list: rebuilding
+	// BuildFromString(ItemsSite, Content) reproduces the exact document.
+	// Keeps large pasted rooms from writing one JSON object per character.
+	ItemsSite string               `json:"itemsSite,omitempty"`
+	History   []model.HistoryEntry `json:"history,omitempty"`
 }
 
 // WithPersistence enables disk snapshots under dir. Empty dir keeps the store
@@ -176,7 +180,13 @@ func (s *Store) writeSnapshot(key string) {
 		History:    cloneHistory(item.History),
 	}
 	if item.Doc != nil {
-		snap.Items = item.Doc.Items()
+		// A linear chain is fully described by its text plus the site, so the
+		// snapshot stores that instead of one item object per character.
+		if site, linear := item.Doc.LinearChain(); linear {
+			snap.ItemsSite = site
+		} else {
+			snap.Items = item.Doc.Items()
+		}
 	}
 	version, generation := item.Version, item.Generation
 	passSalt := item.PasswordSalt
@@ -273,7 +283,21 @@ func (s *Store) loadPersisted() {
 		}
 
 		doc := crdt.NewDoc()
-		if err := doc.FromItems(snap.Items); err != nil {
+		if snap.ItemsSite != "" || len(snap.Items) == 0 {
+			// Linear chain: the snapshot carried the site instead of items.
+			site := snap.ItemsSite
+			if site == "" {
+				site = snap.UpdatedBy
+				if site == "" {
+					site = "server"
+				}
+			}
+			var err error
+			doc, err = crdt.BuildFromString(site, snap.Content)
+			if err != nil {
+				continue
+			}
+		} else if err := doc.FromItems(snap.Items); err != nil {
 			// Corrupt item set — rebuild the linear chain from the cached text.
 			site := snap.UpdatedBy
 			if site == "" {

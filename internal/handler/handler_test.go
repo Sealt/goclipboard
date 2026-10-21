@@ -232,6 +232,30 @@ func TestRejectsInvalidKeysAndTTL(t *testing.T) {
 	}
 }
 
+func TestWellKnownPathsAreNotRooms(t *testing.T) {
+	h := newTestHandler()
+	handler := h.Routes()
+
+	// A browser UA on these paths used to render an empty room page.
+	for _, path := range []string{"/favicon.ico", "/favicon.svg", "/robots.txt"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("User-Agent", "Mozilla/5.0")
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", res.Code)
+			}
+			if body := res.Body.String(); strings.Contains(body, "<main") {
+				t.Fatalf("%s served the SPA instead of a well-known resource", path)
+			}
+			if _, ok := h.store.Get(strings.TrimPrefix(path, "/")); ok {
+				t.Fatalf("%s created a room", path)
+			}
+		})
+	}
+}
+
 func TestPageAndRootRoutes(t *testing.T) {
 	h := newTestHandler()
 	handler := h.Routes()
@@ -781,7 +805,9 @@ func TestWebSocketAckSyncAndTTLOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := readUntil("state")
-	if st.Content != "H" || st.Version != 2 || len(st.Items) == 0 {
+	// A linear-chain document ships its site instead of the per-character
+	// item list; either form must describe the same one-character document.
+	if st.Content != "H" || st.Version != 2 || (len(st.Items) == 0 && st.ItemsSite == "") {
 		t.Fatalf("sync state = %+v", st)
 	}
 

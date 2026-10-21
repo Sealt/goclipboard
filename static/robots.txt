@@ -1,0 +1,4 @@
+# Clipboard rooms are private and ephemeral: crawling them would create empty
+# rooms (any single path segment is a valid room key) and index user content.
+User-agent: *
+Disallow: /

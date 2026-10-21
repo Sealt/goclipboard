@@ -297,3 +297,70 @@ func TestDeepChainWalkDoesNotOverflow(t *testing.T) {
 		t.Fatalf("items len = %d, want %d", got, n)
 	}
 }
+
+func TestLinearChainDetection(t *testing.T) {
+	d, err := BuildFromString("alice", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site, ok := d.LinearChain(); !ok || site != "alice" {
+		t.Fatalf("LinearChain = (%q, %v), want (alice, true)", site, ok)
+	}
+
+	// Empty document: nothing to describe, still linear.
+	if site, ok := NewDoc().LinearChain(); !ok || site != "" {
+		t.Fatalf("empty LinearChain = (%q, %v), want (\"\", true)", site, ok)
+	}
+
+	// A tombstone breaks the chain (ids no longer map 1:1 to content).
+	dead, _ := BuildFromString("alice", "hello")
+	dead.Delete("alice:2")
+	if _, ok := dead.LinearChain(); ok {
+		t.Fatal("document with a tombstone reported as a linear chain")
+	}
+
+	// A concurrent sibling breaks the chain (real fork, ids not sequential).
+	forked, _ := BuildFromString("alice", "hello")
+	if _, err := forked.Insert("bob:9", "alice:2", "X"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := forked.LinearChain(); ok {
+		t.Fatal("forked document reported as a linear chain")
+	}
+
+	// Two sites interleaved in one chain also break it: the rebuild would
+	// invent different ids.
+	mixed := NewDoc()
+	if _, err := mixed.Insert("a:1", "", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mixed.Insert("b:2", "a:1", "y"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mixed.LinearChain(); ok {
+		t.Fatal("multi-site chain reported as a linear chain")
+	}
+}
+
+func TestLinearChainRebuildMatchesItems(t *testing.T) {
+	// The compact wire form must reproduce the exact document, ids included.
+	const text = "line one\nline two 中文编码 🙂\n"
+	orig, err := BuildFromString("paste", text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, ok := orig.LinearChain()
+	if !ok {
+		t.Fatal("BuildFromString output not detected as a linear chain")
+	}
+	rebuilt, err := BuildFromString(site, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := rebuilt.Materialize(), orig.Materialize(); got != want {
+		t.Fatalf("materialize = %q, want %q", got, want)
+	}
+	if !sameItems(rebuilt.Items(), orig.Items()) {
+		t.Fatal("rebuilt chain does not match the original item list")
+	}
+}

@@ -6,11 +6,13 @@ import (
 )
 
 // Item is one character atom in the RGA tree (may be a tombstone).
+// Fields are terse because a live room ships one item per character on the
+// wire and on disk; `del` is omitted unless true (~20% of a state snapshot).
 type Item struct {
 	ID      string `json:"id"`
 	After   string `json:"after"`
 	Value   string `json:"ch"`
-	Deleted bool   `json:"del"`
+	Deleted bool   `json:"del,omitempty"`
 }
 
 // Doc is an insert-after RGA sequence CRDT.
@@ -128,6 +130,57 @@ func (d *Doc) Items() []Item {
 		out = append(out, *item)
 	})
 	return out
+}
+
+// LinearChain reports whether the document is exactly the chain that
+// BuildFromString produces: every item live, ids "site:1".."site:n", each
+// parented on the previous one. That is the shape of every freshly pasted or
+// typed room with no concurrent history, and it lets the wire and disk
+// formats carry the text plus the site instead of one JSON object per
+// character (6 MB of items for a 90k-char room collapses to its 280 KB text).
+// Any tombstone, fork or foreign id makes it return false, and the caller
+// falls back to the generic item list.
+func (d *Doc) LinearChain() (site string, ok bool) {
+	if len(d.items) == 0 {
+		return "", true
+	}
+	rootKids := d.children[""]
+	if len(rootKids) != 1 {
+		return "", false
+	}
+	first, ok := d.items[rootKids[0]]
+	if !ok || first.Deleted || first.After != "" {
+		return "", false
+	}
+	firstSite, firstClock, err := ParseID(first.ID)
+	if err != nil || firstClock != 1 {
+		return "", false
+	}
+	count := int64(1)
+	prev := first.ID
+	for {
+		kids := d.children[prev]
+		if len(kids) == 0 {
+			break
+		}
+		if len(kids) != 1 {
+			return "", false
+		}
+		next, ok := d.items[kids[0]]
+		if !ok || next.Deleted || next.After != prev {
+			return "", false
+		}
+		nextSite, nextClock, err := ParseID(next.ID)
+		if err != nil || nextSite != firstSite || nextClock != count+1 {
+			return "", false
+		}
+		count++
+		prev = next.ID
+	}
+	if count != int64(len(d.items)) {
+		return "", false
+	}
+	return firstSite, true
 }
 
 // FromItems rebuilds a document from a snapshot. Items may be in any order;

@@ -41,6 +41,11 @@ const (
 	wsPresencePeriod = 5 * time.Second
 	// Large enough for op batches and CRDT state snapshots (content still capped at 1MiB).
 	wsMaxMessage = 256 << 10
+	// Per-message compression (RFC 7692) pays off on full state snapshots:
+	// a 90k-char room serializes to ~6 MiB of per-character CRDT JSON, which
+	// deflates to ~700 KiB. Cursor/ack frames are tiny and cost more CPU to
+	// compress than they save, so the writer only enables it above this size.
+	wsCompressMinBytes = 1024
 
 	// DoS guards for the WebSocket channel. Defaults leave headroom for
 	// legitimate multi-user sessions (a client flushes ops ~17 msg/s and
@@ -56,6 +61,10 @@ const (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	// Negotiate permessage-deflate so big state snapshots cross the wire
+	// compressed. Whether a given message is actually compressed is decided
+	// per message in wsWriteLoop (small control/ack/cursor frames skip it).
+	EnableCompression: true,
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
@@ -160,6 +169,12 @@ func (h *Handler) PingExpired(key string) {
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.handleHealthz)
+	// Well-known paths every browser and crawler probes. Without explicit
+	// routes they fell through to the room handler and rendered an empty
+	// room page for /favicon.ico.
+	mux.HandleFunc("/favicon.ico", h.handleFavicon)
+	mux.HandleFunc("/favicon.svg", h.handleFavicon)
+	mux.HandleFunc("/robots.txt", h.handleRobots)
 	mux.HandleFunc("/", h.handlePage)
 	mux.HandleFunc("/api/clipboard", h.handleCreateClipboard)
 	mux.HandleFunc("/api/clipboard/", h.handleClipboardAPI)
@@ -167,6 +182,28 @@ func (h *Handler) Routes() http.Handler {
 	// unversioned paths so deploys are not stuck on old JS/CSS.
 	mux.Handle("/static/", staticCacheHeaders(http.FileServer(http.FS(h.static))))
 	return mux
+}
+
+func (h *Handler) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	// One SVG serves both paths: modern browsers accept SVG for rel=icon,
+	// and /favicon.ico requests still get a real icon instead of a 404.
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=604800")
+	http.ServeFileFS(w, r, h.static, "static/favicon.svg")
+}
+
+func (h *Handler) handleRobots(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=604800")
+	http.ServeFileFS(w, r, h.static, "static/robots.txt")
 }
 
 func staticCacheHeaders(next http.Handler) http.Handler {
@@ -799,7 +836,12 @@ type wsOutbound struct {
 	Exists     *bool       `json:"exists,omitempty"`
 	UpdatedBy  string      `json:"updatedBy,omitempty"`
 	Items      []crdt.Item `json:"items,omitempty"`
-	Ops        []crdt.Op   `json:"ops,omitempty"`
+	// ItemsSite, when set, means "items omitted on purpose": the document is
+	// the linear chain BuildFromString(site, Content) would produce, so the
+	// client rebuilds identical ids from Content and this site. Removes the
+	// per-character JSON that dominated first-load size for pasted rooms.
+	ItemsSite string    `json:"itemsSite,omitempty"`
+	Ops       []crdt.Op `json:"ops,omitempty"`
 	// Cursor snapshot (type=cursor)
 	Cursors []model.CursorInfo `json:"cursors,omitempty"`
 	// File list snapshot (type=files) — metadata only, not blobs
@@ -1009,7 +1051,15 @@ func (h *Handler) wsWriteLoop(conn *websocket.Conn, send <-chan any) {
 				}
 			}
 		default:
-			if err := conn.WriteJSON(m); err != nil {
+			data, err := json.Marshal(m)
+			if err != nil {
+				return
+			}
+			// Compress only payloads big enough that deflate saves more than
+			// its setup costs; acks, cursors and presence frames stay raw.
+			// The write loop is the sole writer, so toggling is race-free.
+			conn.EnableWriteCompression(len(data) >= wsCompressMinBytes)
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				return
 			}
 		}
@@ -1395,8 +1445,19 @@ func (h *Handler) stateMessage(key string, item model.Clipboard, exists bool, au
 		existsTrue := true
 		msg.Exists = &existsTrue
 		msg.UpdatedBy = resp.UpdatedBy
+		// A room whose document is still the linear chain produced by
+		// BuildFromString ships its text plus the site; clients rebuild the
+		// exact same ids from that. Otherwise send the full item list.
 		if item.Doc != nil {
-			msg.Items = item.Doc.Items()
+			if site, linear := item.Doc.LinearChain(); linear {
+				msg.ItemsSite = site
+				if msg.ItemsSite == "" {
+					// Empty room: no items to describe either way.
+					msg.Items = []crdt.Item{}
+				}
+			} else {
+				msg.Items = item.Doc.Items()
+			}
 		} else {
 			msg.Items = []crdt.Item{}
 		}

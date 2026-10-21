@@ -22,14 +22,21 @@
   var EN = {
     "已保存": "Saved",
     "尚未保存": "Not saved yet",
+    "已保存，复制链接就能分享给其他人": "Saved — copy the link to share it",
+    "有效期需为大于 0 的整数": "TTL must be a whole number greater than 0",
     "已过期 · ": "Expired · ",
     "过期 ": "Expires ",
+    "剩余 {0} · {1} 过期": "{0} left · expires {1}",
+    "已过期": "Expired",
     "（剩余 ": " (",
     "）": ")",
     "秒": "s",
-    " 分钟": " min",
-    " 小时": " h",
-    " 天": " d",
+    "有效期": "TTL",
+    "直接粘贴或输入内容": "Paste or type here",
+    "内容实时同步给打开同一链接的人，到期自动销毁": "Everyone with this link sees your edits live. The room self-destructs when it expires.",
+    "从剪贴板粘贴": "Paste from clipboard",
+    "浏览器未授权读取剪贴板，请按 Ctrl/⌘+V 粘贴": "Clipboard access was blocked — press Ctrl/⌘+V to paste",
+    "请按 Ctrl/⌘+V 粘贴": "Press Ctrl/⌘+V to paste",
     "自己 · ": "me · ",
     "协作者 · ": "peer · ",
     "房间 ": "room ",
@@ -131,6 +138,29 @@
     "字符": "chars",
     "手动": "manual",
     "加载中…": "Loading…",
+    "已锁定": "Locked",
+    "只读 · 解锁编辑": "Read-only · unlock to edit",
+    "解锁编辑": "Unlock editing",
+    "此房间的查看不受限制，输入密码后即可编辑": "Anyone can read this room; enter the password to edit",
+    "此房间已加密": "This room is locked",
+    "此房间已锁定": "This room is locked",
+    "查看和编辑都需要房间密码": "Viewing and editing both need the room password",
+    "查看无需密码，编辑需要房间密码": "Anyone can view; editing needs the room password",
+    "解锁": "Unlock",
+    "验证中…": "Checking…",
+    "密码错误，请重试": "Wrong password, try again",
+    "验证失败，请检查网络后重试": "Could not verify — check your connection and retry",
+    "房间已锁定 · 输入密码后才能查看和编辑": "Room locked · enter the password to view and edit",
+    "已同步": "Synced",
+    "已断开": "Offline",
+    "连接中…": "Connecting…",
+    "保存中…": "Saving…",
+    "正在保存修改": "Saving your changes",
+    "我": "me",
+    "已连接 · 修改会实时同步给所有打开此房间的人": "Connected · edits sync live to everyone in this room",
+    "连接已断开 · 正在重试，修改会先保存在本地": "Disconnected · retrying, edits are kept locally",
+    "正在加载剪贴板…": "Loading clipboard…",
+    "加载超时，正在重试…": "Still loading — retrying…",
     "加载历史失败": "Failed to load history",
     "查看历史需要房间密码": "Room password required to view history",
     "已存档当前版本": "Snapshot saved",
@@ -148,6 +178,8 @@
     "二维码为房间链接，扫码即可打开": "The QR code encodes the room link — scan to open",
     "复制": "Copy",
     "已复制": "Copied",
+    "复制房间链接": "Copy room link",
+    "新建房间": "New room",
     "关闭": "Close",
     "存档当前版本": "Save snapshot",
     "恢复": "Restore",
@@ -234,6 +266,7 @@
     for (var k = 0; k < ar.length; k++) {
       ar[k].setAttribute("aria-label", t(ar[k].getAttribute("data-i18n-aria")));
     }
+    applyShortcutTitles();
     // Re-render dynamic texts.
     if (typeof renderExpires === "function" && lastExpiresAt) renderExpires(lastExpiresAt);
     if (typeof updateRoomTitleChrome === "function") updateRoomTitleChrome();
@@ -242,12 +275,34 @@
     if (typeof setFilesStatus === "function") setFilesStatus("");
   }
 
+  // Shortcut hints live in tooltips: the icons stay compact, and the keyboard
+  // path (the fastest one for this app) becomes discoverable.
+  function applyShortcutTitles() {
+    var mod = /Mac/i.test(navigator.platform || "") ? "⌘" : "Ctrl+";
+    var hints = {
+      undoBtn: [t("撤销"), mod + "Z"],
+      redoBtn: [t("重做"), mod + "⇧Z"],
+      previewBtn: [t("Markdown 预览"), ""],
+      historyBtn: [t("版本历史"), ""],
+      shareBtn: [t("分享链接"), ""],
+      newRoomBtn: [t("新建房间"), ""]
+    };
+    Object.keys(hints).forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      var label = hints[id][0];
+      var key = hints[id][1];
+      el.title = key ? label + " (" + key + ")" : label;
+    });
+  }
+
   // --- Theme ---------------------------------------------------------------
   // SVG icons (Feather-style, stroke inherits currentColor).
+  // Lucide (ISC) glyphs, inlined so the icons cost no extra request.
   var THEME_ICONS = {
-    dark: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>',
-    light: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>',
-    auto: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>'
+    dark: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>',
+    light: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
+    auto: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2v2"/><path d="M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715"/><path d="M16 12a4 4 0 0 0-4-4"/><path d="m19 5-1.256 1.256"/><path d="M20 12h2"/></svg>'
   };
 
   function currentThemePreference() {
@@ -258,16 +313,34 @@
     }
   }
 
-  function applyTheme() {
+  // The highlight.js theme stylesheet is injected on first use (Markdown
+  // preview) instead of sitting in <head>, where it was a render-blocking
+  // request for a feature most visits never open.
+  var hljsThemeLink = null;
+
+  function ensureHljsTheme() {
+    if (hljsThemeLink && hljsThemeLink.parentNode) return hljsThemeLink;
+    hljsThemeLink = document.createElement("link");
+    hljsThemeLink.rel = "stylesheet";
+    hljsThemeLink.id = "hljsTheme";
+    document.head.appendChild(hljsThemeLink);
+    applyHljsThemeHref();
+    return hljsThemeLink;
+  }
+
+  function applyHljsThemeHref() {
+    if (!hljsThemeLink) return;
     var pref = currentThemePreference();
     var dark = pref === "dark" || (pref !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    hljsThemeLink.href = dark
+      ? "/static/vendor/highlight.github-dark.css"
+      : "/static/vendor/highlight.github.css";
+  }
+
+  function applyTheme() {
+    var pref = currentThemePreference();
     document.documentElement.dataset.theme = pref === "light" ? "light" : (pref === "dark" ? "dark" : "");
-    var hljsLink = document.getElementById("hljsTheme");
-    if (hljsLink) {
-      hljsLink.href = dark
-        ? "/static/vendor/highlight.github-dark.css"
-        : "/static/vendor/highlight.github.css";
-    }
+    applyHljsThemeHref();
     var btn = document.getElementById("themeBtn");
     if (btn) {
       btn.innerHTML = THEME_ICONS[pref === "dark" ? "dark" : pref === "light" ? "light" : "auto"];
@@ -421,7 +494,9 @@
   }
 
   var roomTitle = document.getElementById("roomTitle");
+  var copyRoomBtn = document.getElementById("copyRoomBtn");
   var status = document.getElementById("status");
+  var statusText = status ? status.querySelector(".status-text") : null;
   var ttlValue = document.getElementById("ttlValue");
   var ttlUnit = document.getElementById("ttlUnit");
   var expiresText = document.getElementById("expiresText");
@@ -430,6 +505,8 @@
   var dotDown = document.getElementById("dotDown");
   var content = document.getElementById("content");
   var cursorLayer = document.getElementById("cursorLayer");
+  var loadingOverlay = document.getElementById("loadingOverlay");
+  var loadingText = document.getElementById("loadingText");
   var appRoot = document.querySelector(".app");
   var fileList = document.getElementById("fileList");
   var filesCount = document.getElementById("filesCount");
@@ -446,15 +523,35 @@
   var modalError = document.getElementById("modalError");
   var modalCancel = document.getElementById("modalCancel");
   var modalConfirm = document.getElementById("modalConfirm");
+  // Generic confirm dialog
+  var confirmModal = document.getElementById("confirmModal");
+  var confirmTitle = document.getElementById("confirmTitle");
+  var confirmMessage = document.getElementById("confirmMessage");
+  var confirmOk = document.getElementById("confirmOk");
+  var confirmCancel = document.getElementById("confirmCancel");
   // New feature controls
   var undoBtn = document.getElementById("undoBtn");
   var redoBtn = document.getElementById("redoBtn");
   var previewBtn = document.getElementById("previewBtn");
   var historyBtn = document.getElementById("historyBtn");
   var shareBtn = document.getElementById("shareBtn");
+  var newRoomBtn = document.getElementById("newRoomBtn");
   var themeBtn = document.getElementById("themeBtn");
   var langBtn = document.getElementById("langBtn");
   var previewPane = document.getElementById("previewPane");
+  var emptyHint = document.getElementById("emptyHint");
+  var emptyPasteBtn = document.getElementById("emptyPasteBtn");
+  var emptyShareBtn = document.getElementById("emptyShareBtn");
+  // Room unlock gate
+  var roomLock = document.getElementById("roomLock");
+  var roomLockForm = document.getElementById("roomLockForm");
+  var roomLockTitle = document.getElementById("roomLockTitle");
+  var roomLockHint = document.getElementById("roomLockHint");
+  var roomLockLabel = document.getElementById("roomLockLabel");
+  var roomLockPassword = document.getElementById("roomLockPassword");
+  var roomLockError = document.getElementById("roomLockError");
+  var roomLockSubmit = document.getElementById("roomLockSubmit");
+  var unlockEditBtn = document.getElementById("unlockEditBtn");
   var previewBody = document.getElementById("previewBody");
   var shareModal = document.getElementById("shareModal");
   var shareQrWrap = document.getElementById("shareQrWrap");
@@ -514,6 +611,12 @@
   var compositionBaseDoc = null;
   var deferredContentMessages = [];
   var lastExpiresAt = null;
+  // Set once the first save of this room has been announced to the user.
+  var firstSaveAnnounced = false;
+  // True after the server has described the room's initial state once.
+  var initialStateSeen = false;
+  // Guards the "invalid TTL" toast so a streak of bad input warns only once.
+  var ttlInvalidNotified = false;
   var syncRequestedAt = 0;
 
   var cursorTimer = 0;
@@ -529,6 +632,9 @@
   var reconnectAttempts = 0;
   var intentionalClose = false;
   var connected = false;
+  // Distinguishes "not connected yet" from "was connected, then dropped":
+  // only the latter is worth showing as an error.
+  var everConnected = false;
   var lastMsgAt = 0; // liveness: server pushes presence every ~5s
   var msgStaleMs = 15000;
   var restPollTimer = 0;
@@ -552,6 +658,9 @@
   // Markdown preview
   var previewVisible = false;
   var previewTimer = 0;
+  // Declared with the rest of the state: ?mode=md calls togglePreview() during
+  // init, before the loader helpers further down have run their statements.
+  var vendorLoads = {};
 
   roomTitle.textContent = "/" + key;
   updateRoomTitleChrome();
@@ -598,6 +707,8 @@
   setupPasswordModal();
   setupRoomTitleToggle();
   setupNewControls();
+  setupEmptyHint();
+  setupRoomLock();
 
   // Keyboard shortcuts: undo / redo (intercepted so they map to CRDT ops and
   // survive remote edits, unlike the browser's native textarea undo).
@@ -607,32 +718,39 @@
     var k = (e.key || "").toLowerCase();
     if (k === "z" && !e.shiftKey) {
       e.preventDefault();
-      undo();
+      if (!blockWhenReadOnly()) undo();
     } else if (k === "z" && e.shiftKey) {
       e.preventDefault();
-      redo();
+      if (!blockWhenReadOnly()) redo();
     } else if (k === "y") {
       e.preventDefault();
-      redo();
+      if (!blockWhenReadOnly()) redo();
     }
   });
 
   // --- New feature controls (undo/redo, preview, history, share, theme, lang) ---
 
   function setupNewControls() {
-    if (undoBtn) undoBtn.addEventListener("click", undo);
-    if (redoBtn) redoBtn.addEventListener("click", redo);
+    if (undoBtn) undoBtn.addEventListener("click", function () { if (!blockWhenReadOnly()) undo(); });
+    if (redoBtn) redoBtn.addEventListener("click", function () { if (!blockWhenReadOnly()) redo(); });
     if (previewBtn) previewBtn.addEventListener("click", togglePreview);
-    if (historyBtn) historyBtn.addEventListener("click", openHistory);
+    if (historyBtn) historyBtn.addEventListener("click", function () { if (!blockWhenReadOnly()) openHistory(); });
     if (shareBtn) shareBtn.addEventListener("click", openShare);
     if (themeBtn) themeBtn.addEventListener("click", cycleTheme);
+    if (newRoomBtn) {
+      newRoomBtn.addEventListener("click", function () {
+        window.location.href = "/";
+      });
+    }
     if (langBtn) langBtn.addEventListener("click", toggleLang);
     if (shareClose) shareClose.addEventListener("click", closeShare);
     if (historyClose) historyClose.addEventListener("click", closeHistory);
     if (historyCapture) historyCapture.addEventListener("click", function () {
+      if (blockWhenReadOnly()) return;
       captureHistoryManual();
     });
     if (historyClear) historyClear.addEventListener("click", function () {
+      if (blockWhenReadOnly()) return;
       clearHistoryTrail();
     });
     if (historyPreviewClose) {
@@ -641,6 +759,7 @@
     if (historyPreviewRestore) {
       historyPreviewRestore.addEventListener("click", function () {
         if (historyPreviewIdx < 0) return;
+        if (blockWhenReadOnly()) return;
         var idx = historyPreviewIdx;
         closeHistoryPreview();
         restoreSnapshot(idx);
@@ -660,6 +779,7 @@
     }
     if (sharePassCopy) {
       sharePassCopy.addEventListener("click", function () {
+        if (blockWhenReadOnly()) return;
         if (!editPasswordSet) {
           setRoomPassword();
           return;
@@ -694,11 +814,13 @@
     }
     if (sharePassReset) {
       sharePassReset.addEventListener("click", function () {
+        if (blockWhenReadOnly()) return;
         if (editPasswordSet) changeRoomPassword();
       });
     }
     if (sharePassUnlock) {
       sharePassUnlock.addEventListener("click", function () {
+        if (blockWhenReadOnly()) return;
         if (editPasswordSet) unlockRoom();
       });
     }
@@ -714,17 +836,95 @@
     });
     document.addEventListener("keydown", function (e) {
       if (e.key !== "Escape") return;
-      // Topmost dialog first: snapshot preview sits above history.
+      // Topmost dialog first: snapshot preview sits above history, and the
+      // confirm prompt sits above everything.
+      if (confirmModal && !confirmModal.hidden) {
+        closeConfirm(false);
+        return;
+      }
       if (historyPreviewModal && !historyPreviewModal.hidden) {
         closeHistoryPreview();
         return;
       }
       if (shareModal && !shareModal.hidden) {
-        shareModal.hidden = true;
+        closeShare();
         return;
       }
       if (historyModal && !historyModal.hidden) closeHistory();
     });
+    setupModalFocus();
+  }
+
+  // Dialogs used to leave focus on the trigger button behind the backdrop, so
+  // Tab walked through the page before reaching dialog content and Escape
+  // handed focus back to <body>. Keep focus inside whichever dialog is open.
+  function modalStack() {
+    return [confirmModal, passwordModal, historyPreviewModal, shareModal, historyModal].filter(function (m) {
+      return m && !m.hidden;
+    });
+  }
+
+  function focusablesIn(root) {
+    var sel = "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), " +
+      "textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+    return Array.prototype.filter.call(root.querySelectorAll(sel), function (el) {
+      return el.offsetParent !== null || el === document.activeElement;
+    });
+  }
+
+  function setupModalFocus() {
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Tab") return;
+      var stack = modalStack();
+      if (!stack.length) return;
+      var top = stack[stack.length - 1];
+      var items = focusablesIn(top);
+      if (!items.length) return;
+      var first = items[0];
+      var last = items[items.length - 1];
+      var active = document.activeElement;
+      if (!top.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
+
+    if (!window.MutationObserver) return;
+    var openReturn = []; // focus targets to restore, one per open dialog
+    var observer = new MutationObserver(function (records) {
+      for (var i = 0; i < records.length; i++) {
+        var rec = records[i];
+        var t = rec.target;
+        if (!t.classList || !t.classList.contains("modal")) continue;
+        if (rec.attributeName !== "hidden") continue;
+        // attributeOldValue is null when the attribute was absent. For a
+        // boolean attribute its value is "", so presence is what matters:
+        // present → was hidden, absent → was visible.
+        var wasHidden = rec.oldValue !== null;
+        if (!t.hidden && wasHidden) {
+          // Save the trigger before moving focus: it is the element that had
+          // focus while the dialog was still closed.
+          openReturn.push(document.activeElement);
+          var items = focusablesIn(t);
+          if (items.length) items[0].focus();
+        } else if (t.hidden && !wasHidden) {
+          var back = openReturn.pop();
+          if (back && document.contains(back) && back.offsetParent !== null) back.focus();
+        }
+      }
+    });
+    var modals = document.querySelectorAll(".modal");
+    for (var m = 0; m < modals.length; m++) {
+      observer.observe(modals[m], { attributes: true, attributeFilter: ["hidden"], attributeOldValue: true });
+    }
   }
 
   function toggleLang() {
@@ -796,6 +996,9 @@
   }
 
   function undo() {
+    // Belt and braces: every entry point already checks, but a read-only room
+    // must never mutate the document through a path we forgot to guard.
+    if (blockWhenReadOnly()) return;
     if (!undoStack.length) return;
     var entry = undoStack.pop();
     var ops = inverseOps(entry.ops);
@@ -820,6 +1023,7 @@
   }
 
   function redo() {
+    if (blockWhenReadOnly()) return;
     if (!redoStack.length) return;
     var entry = redoStack.pop();
     var ops = inverseOps(entry.ops); // redo = inverse of the undo batch
@@ -935,6 +1139,7 @@
   // Manual archive only — automatic checkpoints are recorded server-side
   // after content mutations (shared across every browser on the room).
   function captureHistoryManual() {
+    if (blockWhenReadOnly()) return;
     if (!doc.materialize()) {
       showToast(t("暂无可存档内容"));
       return;
@@ -977,7 +1182,17 @@
       showToast(t("暂无历史版本"));
       return;
     }
-    if (!window.confirm(t("确定清空全部版本历史？此操作不可撤销"))) return;
+    confirmAction({
+      title: t("清空历史"),
+      message: t("确定清空全部版本历史？此操作不可撤销"),
+      confirmLabel: t("清空历史"),
+      danger: true
+    }).then(function (ok) {
+      if (ok) doClearHistory();
+    });
+  }
+
+  function doClearHistory() {
     ensureHistoryPassword().then(function (ok) {
       if (!ok) return;
       fetch(historyAPIURL, { method: "DELETE", headers: historyAuthHeaders() })
@@ -1073,9 +1288,6 @@
         var isCurrent = snap.text === current;
         var li = document.createElement("li");
         li.className = "history-item" + (isCurrent ? " is-current" : "");
-        li.setAttribute("role", "button");
-        li.tabIndex = 0;
-        li.setAttribute("aria-label", t("版本预览"));
         var meta = document.createElement("div");
         meta.className = "history-meta";
         var when = document.createElement("div");
@@ -1108,25 +1320,25 @@
         prev.textContent = text.slice(0, 80) + (text.length > 80 ? "…" : "");
         meta.appendChild(when);
         meta.appendChild(prev);
+        // Preview is a real button so the row has one clear action and the
+        // restore button next to it is not nested inside another control.
+        var open = document.createElement("button");
+        open.type = "button";
+        open.className = "history-open";
+        open.setAttribute("aria-label", t("版本预览") + " · " + d.toLocaleString());
+        open.appendChild(meta);
+        open.addEventListener("click", function () {
+          openHistoryPreview(idx);
+        });
         var restore = document.createElement("button");
         restore.type = "button";
         restore.className = "btn-sm" + (isCurrent ? "" : " primary");
         restore.textContent = t("恢复");
         restore.disabled = isCurrent;
-        restore.addEventListener("click", function (e) {
-          e.stopPropagation();
+        restore.addEventListener("click", function () {
           restoreSnapshot(idx);
         });
-        li.addEventListener("click", function () {
-          openHistoryPreview(idx);
-        });
-        li.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            openHistoryPreview(idx);
-          }
-        });
-        li.appendChild(meta);
+        li.appendChild(open);
         li.appendChild(restore);
         historyList.appendChild(li);
       })(historySnapshots[i], i);
@@ -1136,6 +1348,7 @@
   // Restore diffs the current doc against the snapshot text and applies the
   // delta as ordinary CRDT ops — a merge, never a clobber.
   function restoreSnapshot(idx) {
+    if (blockWhenReadOnly()) return;
     var snap = historySnapshots[idx];
     if (!snap) return;
     var oldText = doc.materialize();
@@ -1264,6 +1477,223 @@
     });
   }
 
+  // --- Read-only controls ---------------------------------------------------
+  // While an edit-locked room has no password the content stays readable, but
+  // nothing that writes should be reachable: undo/redo, history capture and
+  // restore, password changes, new room. Controls that only read (preview,
+  // share link, unlock chip) stay live.
+
+  var WRITE_CONTROLS = [
+    "undoBtn", "redoBtn", "historyBtn", "newRoomBtn",
+    "historyClear", "historyCapture", "historyPreviewRestore",
+    "sharePassCopy", "sharePassReset", "sharePassUnlock"
+  ];
+
+  function applyReadOnlyControls() {
+    var readOnly = roomNeedsUnlock() && !isViewGate();
+    for (var i = 0; i < WRITE_CONTROLS.length; i++) {
+      var el = document.getElementById(WRITE_CONTROLS[i]);
+      if (!el) continue;
+      // Undo/redo additionally depend on their stacks; updateUndoRedo() owns
+      // that condition once we are writable again.
+      if (!readOnly && el.id === "undoBtn") {
+        el.disabled = undoStack.length === 0;
+      } else if (!readOnly && el.id === "redoBtn") {
+        el.disabled = redoStack.length === 0;
+      } else {
+        el.disabled = readOnly;
+      }
+      if (readOnly) el.setAttribute("aria-disabled", "true");
+      else el.removeAttribute("aria-disabled");
+    }
+    // The TTL selector writes as well: changing it re-saves with a new expiry.
+    if (ttlValue) ttlValue.disabled = readOnly;
+    if (ttlUnit) ttlUnit.disabled = readOnly;
+  }
+
+  // Guard for handlers reachable without a click (keyboard, stale reference).
+  function blockWhenReadOnly() {
+    if (!roomNeedsUnlock() || isViewGate()) return false;
+    showToast(t("当前为只读，解锁后才能编辑"));
+    return true;
+  }
+
+  // --- Room gate (unlock panel) ----------------------------------------------
+  // Both scopes lock the same way, so a single in-page panel handles them:
+  //   view — the server withholds the content, the gate covers the editor;
+  //   edit — content is readable, the gate covers it until the user unlocks.
+  // The panel replaces the modal prompt, which used to appear only after a
+  // keystroke was rejected, leaving typed text stranded in the editor.
+
+  // "locked" | "unlocked". For view-scoped rooms the server is authoritative;
+  // for edit-scoped rooms this reflects whether we hold a working password.
+  var roomAccess = "locked";
+  var roomLockBusy = false;
+  // Set when the password was created or verified in this page session, so the
+  // gate does not immediately demand it back from the person who just set it.
+  var editPasswordJustSet = false;
+
+  function roomNeedsUnlock() {
+    return roomAccess !== "unlocked";
+  }
+
+  // Two very different situations share the word "locked":
+  //   view scope — nothing is readable, so the gate has to own the editor;
+  //   edit scope — reading is public, so covering the text would block the
+  //                one thing the visitor is allowed to do.
+  // For edit scope the editor stays visible and read-only, with a small
+  // "unlock to edit" affordance in the status bar instead of a page-covering
+  // panel.
+  function isViewGate() {
+    return passwordScope === "view";
+  }
+
+  function showRoomLock() {
+    if (!roomLock) return;
+    roomAccess = "locked";
+    if (content) content.readOnly = true;
+    if (isViewGate()) {
+      roomLock.hidden = false;
+      if (appRoot) {
+        appRoot.classList.add("is-locked");
+        appRoot.classList.remove("is-readonly");
+      }
+      if (roomLockTitle) roomLockTitle.textContent = t("此房间已加密");
+      if (roomLockHint) roomLockHint.textContent = t("查看和编辑都需要房间密码");
+      if (roomLockLabel) roomLockLabel.textContent = t("房间密码");
+      if (roomLockSubmit) roomLockSubmit.textContent = t("解锁");
+      if (roomLockError) roomLockError.textContent = "";
+      if (roomLockForm) roomLockForm.removeAttribute("data-invalid");
+      setStatus("locked");
+    } else {
+      // Edit scope: reading stays untouched. The editor is read-only and the
+      // status bar offers the unlock, so nothing covers the content.
+      roomLock.hidden = true;
+      if (appRoot) {
+        appRoot.classList.remove("is-locked");
+        appRoot.classList.add("is-readonly");
+      }
+      setStatus("locked");
+    }
+    if (unlockEditBtn) unlockEditBtn.hidden = isViewGate();
+    applyReadOnlyControls();
+    updateEmptyHint();
+  }
+
+  function hideRoomLock() {
+    roomAccess = "unlocked";
+    if (roomLock) roomLock.hidden = true;
+    if (appRoot) {
+      appRoot.classList.remove("is-locked");
+      appRoot.classList.remove("is-readonly");
+    }
+    if (content) content.readOnly = false;
+    if (unlockEditBtn) unlockEditBtn.hidden = true;
+    if (roomLockPassword) roomLockPassword.value = "";
+    if (roomLockError) roomLockError.textContent = "";
+    if (roomLockForm) roomLockForm.removeAttribute("data-invalid");
+    applyReadOnlyControls();
+    updateEmptyHint();
+  }
+
+  // Open the unlock prompt for an edit-locked room. Same password dialog the
+  // rest of the app uses, opened on demand rather than over the content.
+  function promptEditUnlock() {
+    askPassword({
+      passwordKind: "edit",
+      title: t("解锁编辑"),
+      label: t("编辑密码"),
+      hint: t("此房间的查看不受限制，输入密码后即可编辑"),
+      confirmLabel: t("解锁"),
+      preferRemembered: false
+    }).then(function (pw) {
+      if (!pw) return;
+      unlockWithPassword(pw);
+    });
+  }
+
+  function unlockWithPassword(pw) {
+    tryUnlock(pw).then(function (ok) {
+      if (!ok) {
+        showToast(t("密码错误，请重试"));
+        return;
+      }
+      rememberRoomPassword(pw, passwordScope);
+      editPasswordJustSet = true;
+      hideRoomLock();
+      scheduleFlush();
+    }).catch(function () {
+      showToast(t("验证失败，请检查网络后重试"));
+    });
+  }
+
+  function showRoomLockError(msg) {
+    if (roomLockForm) roomLockForm.setAttribute("data-invalid", "true");
+    if (roomLockError) roomLockError.textContent = msg;
+    if (roomLockPassword) {
+      roomLockPassword.focus();
+      roomLockPassword.select();
+    }
+  }
+
+  // Try a password against the server, then authenticate the socket with it.
+  // Resolves true when the server accepted it.
+  function tryUnlock(pw) {
+    return fetch(apiURL, {
+      headers: { Accept: "application/json", "X-Goclip-Password": pw }
+    }).then(function (res) {
+      if (res.status === 401 || res.status === 403) return false;
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return true;
+    });
+  }
+
+  function submitRoomLock(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (roomLockBusy) return;
+    var pw = roomLockPassword ? String(roomLockPassword.value || "") : "";
+    if (!pw) {
+      showRoomLockError(t("请输入密码"));
+      return;
+    }
+    roomLockBusy = true;
+    if (roomLockSubmit) {
+      roomLockSubmit.disabled = true;
+      roomLockSubmit.textContent = t("验证中…");
+    }
+    if (roomLockError) roomLockError.textContent = "";
+    tryUnlock(pw).then(function (ok) {
+      roomLockBusy = false;
+      if (roomLockSubmit) {
+        roomLockSubmit.disabled = false;
+        roomLockSubmit.textContent = t("解锁");
+      }
+      if (!ok) {
+        showRoomLockError(t("密码错误，请重试"));
+        return;
+      }
+      rememberRoomPassword(pw, passwordScope);
+      editPasswordJustSet = true;
+      hideRoomLock();
+      if (passwordScope === "view") {
+        // The socket session needs the same credential for live sync.
+        requestViewPassword();
+      } else {
+        // Edit unlock: reload so the socket (and pending state) start from an
+        // authenticated session rather than replaying a rejected batch.
+        scheduleFlush();
+        load(true);
+      }
+    }).catch(function () {
+      roomLockBusy = false;
+      if (roomLockSubmit) {
+        roomLockSubmit.disabled = false;
+        roomLockSubmit.textContent = t("解锁");
+      }
+      showRoomLockError(t("验证失败，请检查网络后重试"));
+    });
+  }
+
   // --- View password (room unlock) -------------------------------------------
   // View-protected rooms withhold content until the password is presented.
   // The password is remembered in sessionStorage (per tab) so the room owner
@@ -1302,43 +1732,26 @@
     } catch (e) { /* ignore */ }
   }
 
-  // Prompt for the room password (unless remembered) and authenticate the
-  // WebSocket session; the server then pushes the real room state.
+  // The socket asked for the view password. A remembered one is replayed
+  // silently; otherwise the gate panel takes over (no modal).
   function requestViewPassword() {
-    if (viewPassPromptInFlight) return;
     var remembered = rememberedViewPassword() || (editPasswordSet ? getEditPassword() : "");
     if (remembered) {
       sendAuth(remembered);
       return;
     }
-    viewPassPromptInFlight = true;
-    askPassword({
-      passwordKind: "view",
-      title: t("输入房间密码"),
-      label: t("房间密码"),
-      hint: t("此房间已加密，需要密码才能查看"),
-      preferRemembered: false
-    }).then(function (pw) {
-      viewPassPromptInFlight = false;
-      if (!pw) {
-        setStatus("error");
-        return;
-      }
-      rememberViewPassword(pw);
-      sendAuth(pw);
-    });
+    showRoomLock();
   }
 
-  // The server rejected our password: forget it and ask again. The stored
-  // edit password (localStorage) is the same value, so a stale copy must be
-  // dropped too — otherwise the remembered value would auto-resend forever
-  // and the prompt would never show.
+  // The server rejected our password: forget it and show the gate again with
+  // an inline reason. The stored edit password (localStorage) is the same
+  // value, so a stale copy must be dropped too — otherwise the remembered
+  // value would auto-resend forever and the panel would never show.
   function onInvalidViewPassword() {
     rememberViewPassword("");
     setEditPassword("");
-    showToast(t("房间密码错误，请重试"));
-    viewPassPromptInFlight = false;
-    requestViewPassword();
+    showRoomLock();
+    showRoomLockError(t("密码错误，请重试"));
   }
 
   // --- Set / change the room password (manual entry + scope) -----------------
@@ -1363,6 +1776,9 @@
       preferRemembered: false
     }).then(function (pw) {
       if (!pw) return false;
+      // Mark before the request: the lock-state broadcast can arrive before
+      // this promise resolves, and syncEditLockGate reads the flag then.
+      editPasswordJustSet = true;
       return saveEditPassword(pw, "", roomPassModalScope).then(function (ok) {
         if (ok) {
           editPasswordSet = true;
@@ -1374,6 +1790,7 @@
           if (passwordScope === "view") sendAuth(pw);
           renderShareUrls();
         } else {
+          editPasswordJustSet = false;
           // Server rejected the request (e.g. stale lock) — say so instead
           // of silently looking like nothing happened.
           showToast(t("设置失败"));
@@ -1449,7 +1866,12 @@
     if (!shareModal) return;
     // A single room link: the URL path is the room key, mode just picks the
     // default view. Access control lives in the room password, not the URL.
-    if (shareRoomUrl) shareRoomUrl.textContent = shareUrlWithMode(roomEditUrl());
+    if (shareRoomUrl) {
+      var roomUrl = shareUrlWithMode(roomEditUrl());
+      shareRoomUrl.textContent = roomUrl;
+      // The field ellipsizes on narrow screens; keep the full URL reachable.
+      shareRoomUrl.title = roomUrl;
+    }
     // Room-password row: reflects the server's lock state and scope.
     if (sharePassValue) {
       sharePassValue.textContent = editPasswordSet
@@ -1492,6 +1914,13 @@
 
   function openShare() {
     if (!shareModal) return;
+    // QR is generated from the room URL; the library is small but only the
+    // share dialog needs it, so load it on first open and render when ready.
+    if (!window.qrcode) {
+      loadScriptOnce("/static/vendor/qrcode.min.js")
+        .then(renderShareUrls)
+        .catch(function () { /* renderShareUrls falls back to the plain URL */ });
+    }
     renderShareUrls();
     shareModal.hidden = false;
   }
@@ -1536,6 +1965,36 @@
     ta.remove();
   }
 
+  // --- On-demand vendor scripts ---------------------------------------------
+  // marked / highlight.js / qrcode are only needed once the user opens the
+  // preview or the share dialog. Loading them lazily keeps them off the
+  // critical path, so the first content paint waits on app.js alone.
+  // (vendorLoads itself is declared up top — see the preview state block.)
+
+  function loadScriptOnce(src) {
+    if (vendorLoads[src]) return vendorLoads[src];
+    vendorLoads[src] = new Promise(function (resolve, reject) {
+      var el = document.createElement("script");
+      el.src = src;
+      el.async = true;
+      el.onload = function () { resolve(); };
+      el.onerror = function () { reject(new Error("failed to load " + src)); };
+      document.head.appendChild(el);
+    });
+    // A failed load must stay retryable (e.g. flaky network on first open).
+    vendorLoads[src].catch(function () { delete vendorLoads[src]; });
+    return vendorLoads[src];
+  }
+
+  function loadMarkdownVendors() {
+    return Promise.all([
+      window.marked ? null : loadScriptOnce("/static/vendor/marked.min.js"),
+      window.hljs ? null : loadScriptOnce("/static/vendor/highlight.min.js")
+    ]).then(function () {
+      ensureHljsTheme();
+    });
+  }
+
   // --- Markdown preview -------------------------------------------------------
 
   function togglePreview() {
@@ -1543,8 +2002,19 @@
     if (previewPane) previewPane.hidden = !previewVisible;
     if (content) content.hidden = previewVisible;
     if (cursorLayer) cursorLayer.hidden = previewVisible;
-    if (previewBtn) previewBtn.setAttribute("data-active", String(previewVisible));
-    if (previewVisible) renderPreview();
+    if (previewBtn) {
+      previewBtn.setAttribute("data-active", String(previewVisible));
+      // The icon change alone is invisible to assistive tech.
+      previewBtn.setAttribute("aria-pressed", String(previewVisible));
+    }
+    updateEmptyHint();
+    if (previewVisible) {
+      // First render shows the raw text until marked arrives, then re-renders.
+      loadMarkdownVendors()
+        .then(renderPreview)
+        .catch(function () { /* keep the plain-text fallback */ });
+      renderPreview();
+    }
   }
 
   function schedulePreviewRefresh() {
@@ -1636,19 +2106,65 @@
 
   updatePeers();
   loadFiles();
+  armLoadingSlowHint();
   connectWS();
-  // Let the WS state establish the authoritative CRDT ids first.  A REST
-  // response rebuilds a text-only document with fresh "server:*" ids; if it
-  // wins a race with the initial WS snapshot, local ops can no longer be
-  // replayed by anchor and the draft may be re-diffed as a duplicate tail.
+  // WS state carries the authoritative CRDT ids, so it wins any race with the
+  // REST load below. The REST copy may still paint first when nothing is
+  // unsaved (see applyLoadedSnapshot) — that is what turns a 2-3 s blank
+  // editor into first content as soon as the smallest response lands.
   load(false);
   scheduleCursorSend();
+  focusEditorOnOpen();
+
+  // Opening a room is almost always followed by "paste something", but focus
+  // started on <body>, so Cmd+V went nowhere. Focus the editor once the first
+  // snapshot has painted, unless the user already started interacting.
+  function focusEditorOnOpen() {
+    // On touch devices focusing would pop the on-screen keyboard over a page
+    // the user may have opened just to read or copy.
+    var touchFirst = window.matchMedia && window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+    if (touchFirst) return;
+    var done = false;
+    var attempt = function () {
+      if (done || !content) return;
+      var active = document.activeElement;
+      var busy = active && active !== document.body && active !== content &&
+        (active.tagName === "INPUT" || active.tagName === "SELECT" ||
+          active.tagName === "TEXTAREA" || active.tagName === "BUTTON");
+      if (busy) {
+        done = true;
+        return;
+      }
+      if (!initialSnapshotApplied) return;
+      done = true;
+      if (previewVisible) return; // ?mode=md opens read-only-ish preview
+      try {
+        content.focus({ preventScroll: true });
+        // Put the caret at the end so typing continues the content.
+        var end = content.value.length;
+        content.setSelectionRange(end, end);
+      } catch (e) {
+        // ignore
+      }
+    };
+    var poll = window.setInterval(function () {
+      attempt();
+      if (done) window.clearInterval(poll);
+    }, 120);
+    window.setTimeout(function () {
+      window.clearInterval(poll);
+      done = true;
+    }, 8000);
+  }
 
   function connectWS() {
     window.clearTimeout(reconnectTimer);
     intentionalClose = false;
     setConnected(false);
-    setStatus("error");
+    // A connect attempt is "loading" before any content and "syncing" after:
+    // the editor keeps working and edits are queued locally meanwhile. The
+    // red "disconnected" state is reserved for an actual drop (see onclose).
+    setStatus(initialSnapshotApplied ? "syncing" : "pending");
 
     if (socket) {
       try {
@@ -1743,7 +2259,9 @@
       renderCursors();
       setConnected(false);
       updatePeers();
-      setStatus("error");
+      // The first attempt failing while content is already painted is still a
+      // retry-in-progress, not a hard failure; later drops are real errors.
+      setStatus(everConnected ? "error" : initialSnapshotApplied ? "syncing" : "pending");
       if (intentionalClose) {
         return;
       }
@@ -1886,6 +2404,46 @@
     }
   }
 
+  // An edit-locked room is readable but not writable without the password.
+  // Gate it before the first keystroke instead of after the server rejects the
+  // batch: a password prompt that appears mid-sentence, with the typed text
+  // left in the editor, is what made the old flow feel broken.
+  //
+  // A password this browser already holds is verified silently first, so the
+  // room owner (who set it here) never sees the gate. A stale copy from a
+  // rotated password fails that check and falls back to the panel.
+  function syncEditLockGate() {
+    if (passwordScope !== "edit" || !editPasswordSet) {
+      if (roomNeedsUnlock()) hideRoomLock();
+      return;
+    }
+    var stored = getEditPassword();
+    if (!stored) {
+      showRoomLock();
+      return;
+    }
+    // Whoever set the password in this browser already proved they know it;
+    // re-prompting them on the spot would lock them out of their own room.
+    // Only a password that predates this page load needs verifying.
+    if (editPasswordJustSet) {
+      hideRoomLock();
+      return;
+    }
+    tryUnlock(stored).then(function (ok) {
+      if (ok) {
+        hideRoomLock();
+        return;
+      }
+      setEditPassword("");
+      rememberViewPassword("");
+      showRoomLock();
+    }).catch(function () {
+      // Offline or server error: keep the room usable and let the normal
+      // write path surface the failure, rather than blocking on a guess.
+      hideRoomLock();
+    });
+  }
+
   // A state snapshot can be delayed behind an ops broadcast on the same
   // connection because sync and broker notifications have separate producers.
   // Room generation distinguishes a recreated key from the old incarnation;
@@ -1930,24 +2488,33 @@
     var exists = messageExists(data);
     if (snapshotIsStale(data)) return;
     noteEditPasswordSet(data);
+    syncEditLockGate();
     if (data.passwordRequired) {
       // View-protected room, not authenticated: the server withheld the
-      // content. Keep the editor locked until the password is entered (or
-      // remembered from an earlier unlock in this tab).
-      content.readOnly = true;
+      // content. The gate stays up (or is armed with a remembered password)
+      // until the password is accepted.
+      hideLoading();
       requestViewPassword();
       return;
     }
-    if (content.readOnly) content.readOnly = false;
+    if (content.readOnly && !roomNeedsUnlock()) content.readOnly = false;
     var localText = content.value;
     var previousSyncedText = lastSyncedText;
     var hadPending = pendingOps.length > 0;
+    // Text present on the very first snapshot with no ops behind it was typed
+    // before this script finished loading (or restored by the browser). The
+    // snapshot must not silently discard it.
+    var untypedDraft =
+      !initialSnapshotApplied && !hadPending && previousSyncedText === "" ? localText : "";
     // Capture before replacing the doc so caret can stick to the same characters.
     var sel = captureSelection();
 
     // Always adopt server CRDT tree (authoritative snapshot).
     doc = new CRDT.Doc();
-    if (data.items && data.items.length) {
+    if (data.itemsSite) {
+      // Server elided a linear-chain item list: rebuild the identical ids.
+      doc = CRDT.buildFromString(data.itemsSite, data.content || "") || new CRDT.Doc();
+    } else if (data.items && data.items.length) {
       var fr = doc.fromItems(data.items);
       if (!fr.ok) {
         doc = CRDT.buildFromString(CLIENT_ID, data.content || "") || new CRDT.Doc();
@@ -1993,10 +2560,11 @@
         pendingOps = [];
       }
     }
-    // Only re-diff when there really are unsynced local edits (replay failed).
-    // Without pending ops the textarea is just a stale view — re-diffing it
-    // would revert the very change this snapshot delivers.
-    if (!replayed && hadPending && localText !== serverText) {
+    // Only re-diff when there really are unsynced local edits (replay failed),
+    // or when the very first snapshot would overwrite pre-existing text.
+    // Without either, the textarea is just a stale view — re-diffing it would
+    // revert the very change this snapshot delivers.
+    if (!replayed && localText !== serverText && (hadPending || untypedDraft !== "")) {
       var rebasedText = localText;
       if (previousSyncedText && previousSyncedText !== localText) {
         rebasedText = merge3(previousSyncedText, localText, serverText);
@@ -2006,10 +2574,12 @@
     applyingRemote = true;
     setContentValue(doc.materialize(), sel);
     applyingRemote = false;
+    hideLoading();
     refreshRemoteCursorPositions();
     reanchorRemoteCursorsFromPos();
     if (data.ttlSeconds) setTTLControls(data.ttlSeconds);
     renderCursors();
+    updateEmptyHint();
     scheduleCursorSend();
     if (pendingOps.length) {
       scheduleFlush();
@@ -2135,20 +2705,11 @@
         onInvalidViewPassword();
         return;
       }
-      askEditPassword().then(function (p) {
-        if (!p) {
-          setStatus("error");
-          return;
-        }
-        rememberRoomPassword(p, passwordScope);
-        if (passwordScope === "view" || msg.error === "view password required") {
-          sendAuth(p);
-        }
-        putFailures = 0;
-        // Prefer WS re-flush (with password / post-auth) over a full REST PUT
-        // that can clobber peers while the dialog was open.
-        scheduleFlush();
-      });
+      // A rejected batch means the remembered password is wrong or absent:
+      // show the gate rather than a modal over content the user just typed.
+      setEditPassword("");
+      showRoomLock();
+      showRoomLockError(t("密码错误，请重试"));
       return;
     }
 
@@ -2346,6 +2907,29 @@
     });
   }
 
+  // Tab indents instead of leaving the editor: this is a plain-text clipboard
+  // people paste code into, and Tab-to-unfocus made pasting indented snippets
+  // awkward. Escape then Tab still leaves, which is the documented way out.
+  content.addEventListener("keydown", function (e) {
+    if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    var start = content.selectionStart;
+    var end = content.selectionEnd;
+    var value = content.value;
+    if (start === end) {
+      content.value = value.slice(0, start) + "  " + value.slice(end);
+      content.setSelectionRange(start + 2, start + 2);
+    } else {
+      // Indent each line touched by the selection.
+      var lineStart = value.lastIndexOf("\n", start - 1) + 1;
+      var block = value.slice(lineStart, end);
+      var indented = block.replace(/^/gm, "  ");
+      content.value = value.slice(0, lineStart) + indented + value.slice(end);
+      content.setSelectionRange(lineStart, lineStart + indented.length);
+    }
+    onInput();
+  });
+
   function onInput() {
     if (applyingRemote) return;
     if (compositionActive || compositionCommitPending) {
@@ -2364,6 +2948,7 @@
   // After local or remote doc text changes, keep peer carets on the same characters.
   function onLocalTextChanged(oldText, newText) {
     if (oldText === newText) return;
+    updateEmptyHint();
     var ids = doc.visibleIds();
     Object.keys(remoteCursors).forEach(function (id) {
       var c = remoteCursors[id];
@@ -2397,10 +2982,35 @@
 
   function onSettingsChange() {
     // TTL-only change: push a no-content flush with ttl when possible, else PUT.
+    if (!checkTTL()) return;
     scheduleFlush();
   }
 
+  // Invalid TTL used to surface only as a red "error" in the corner, with no
+  // hint about which field was wrong. Mark the control itself and say why,
+  // once per invalid streak so holding a key down does not spam toasts.
+  function checkTTL() {
+    var ttlSeconds = readTTLSeconds();
+    var group = ttlValue.parentNode;
+    if (ttlSeconds) {
+      ttlInvalidNotified = false;
+      group.removeAttribute("data-invalid");
+      ttlValue.removeAttribute("aria-invalid");
+      return true;
+    }
+    group.setAttribute("data-invalid", "true");
+    ttlValue.setAttribute("aria-invalid", "true");
+    if (!ttlInvalidNotified) {
+      ttlInvalidNotified = true;
+      showToast(t("有效期需为大于 0 的整数"), "warn");
+    }
+    return false;
+  }
+
   function scheduleFlush() {
+    // Show "saving" the moment a keystroke is queued, so the status pill
+    // reflects work in progress instead of snapping between idle states.
+    if (connected) setStatus("saving");
     window.clearTimeout(flushTimer);
     flushTimer = window.setTimeout(function () {
       flushTimer = 0;
@@ -2411,7 +3021,7 @@
   function flushPending() {
     var ttlSeconds = readTTLSeconds();
     if (!ttlSeconds) {
-      setStatus("error");
+      checkTTL();
       return;
     }
 
@@ -2484,7 +3094,7 @@
       putFallbackTimer = 0;
       var ttlSeconds = readTTLSeconds();
       if (!ttlSeconds) {
-        setStatus("error");
+        checkTTL();
         return;
       }
       putReplace(content.value, ttlSeconds);
@@ -2593,6 +3203,7 @@
       return;
     }
     noteEditPasswordSet(data);
+    syncEditLockGate();
     var theirs = data.content || "";
     var version = data.version || 0;
     var base = lastSyncedText;
@@ -2626,8 +3237,10 @@
     applyingRemote = true;
     setContentValue(merged, sel);
     applyingRemote = false;
+    hideLoading();
     shiftRemoteCursorsByText(oldText, merged);
     renderCursors();
+    updateEmptyHint();
     if (merged !== theirs) {
       // Our side still has edits the server lacks — push the merged text.
       schedulePutFallback();
@@ -3168,14 +3781,33 @@
       .catch(function () {
         // 401 on a view-protected room is expected before the user enters the
         // password — the WebSocket locked-state prompt handles it.
-        if (!connected) setStatus("error");
+        if (!connected) {
+          // Nothing renderable arrived; stop pretending to load.
+          hideLoading();
+          setStatus("error");
+        }
       });
   }
 
   function applyLoadedSnapshot(data, force) {
     // REST has no CRDT items — rebuild from content; WS state will refine.
+    //
+    // The WS snapshot is authoritative, so a REST response that loses the race
+    // is normally dropped. Before the first paint, though, dropping it means
+    // waiting out the whole WS handshake + state frame while a perfectly good
+    // copy of the text is already in hand. Paint it when nothing is unsaved
+    // and no composition is in flight; the WS snapshot then re-adopts the
+    // authoritative ids over the same text (setContentValue no-ops on equal
+    // text, so the caret does not move).
+    // A room with unsynced local text must not be repainted from server data:
+    // that would discard what the person just typed while the load was in
+    // flight. Only paint early when the editor still matches the server copy.
+    var localDirty = content.value !== "" && content.value !== lastSyncedText;
+    var canPaintEarly =
+      !initialSnapshotApplied && !pendingOps.length && !compositionIsActive() && !localDirty;
     if (
       !force &&
+      !canPaintEarly &&
       socket &&
       (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
     ) {
@@ -3190,6 +3822,7 @@
       return;
     }
     noteEditPasswordSet(data);
+    syncEditLockGate();
     // REST rebuilds CRDT ids from scratch — keep caret by code-point index only.
     var sel = captureSelection();
     sel.useAnchor = false;
@@ -3206,9 +3839,14 @@
     applyingRemote = true;
     setContentValue(data.content || "", sel);
     applyingRemote = false;
+    // WS is the authoritative first load, but when the socket cannot connect
+    // this REST snapshot is all the user gets — do not leave it behind an
+    // overlay forever.
+    hideLoading();
     setTTLControls(data.ttlSeconds || 3600);
     updateMeta(data);
     renderCursors();
+    updateEmptyHint();
     setIdleStatus();
   }
 
@@ -3313,32 +3951,61 @@
       lastExpiresAt = null;
       expiresText.textContent = t(data.exists ? "已保存" : "尚未保存");
     }
+    announceFirstSave(!!data.exists || !!data.expiresAt);
   }
 
+  // The very first save in a brand-new room is the moment the link becomes
+  // worth sharing, but the only feedback was a small line of text. Show it
+  // once per room, then stay quiet so later keystrokes are not interrupted.
+  function announceFirstSave(exists) {
+    if (!initialStateSeen) {
+      initialStateSeen = true;
+      // The room already had content when this page opened: nothing was
+      // "just saved", so there is nothing to announce.
+      if (exists) {
+        firstSaveAnnounced = true;
+        return;
+      }
+    }
+    if (firstSaveAnnounced || !exists) return;
+    firstSaveAnnounced = true;
+    showToast(t("已保存，复制链接就能分享给其他人"), "ok");
+  }
   function renderExpires(expiresAt) {
     var d = new Date(expiresAt);
     if (Number.isNaN(d.getTime())) {
       expiresText.textContent = "—";
+      expiresText.removeAttribute("data-tone");
+      expiresText.removeAttribute("title");
       return;
     }
     var ms = d.getTime() - Date.now();
+    // Absolute timestamp is the authoritative fact; the countdown is what
+    // people actually scan for. Lead with the countdown and keep the exact
+    // moment in the tooltip + a short suffix.
+    var clock = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     if (ms <= 0) {
-      expiresText.textContent = t("已过期 · ") + d.toLocaleString();
+      expiresText.textContent = t("已过期");
+      expiresText.setAttribute("data-tone", "expired");
+      expiresText.title = d.toLocaleString();
       return;
     }
-    expiresText.textContent = t("过期 ") + d.toLocaleString() + t("（剩余 ") + formatDuration(ms) + t("）");
+    expiresText.textContent = tf("剩余 {0} · {1} 过期", formatDuration(ms), clock);
+    expiresText.title = t("过期 ") + d.toLocaleString();
+    // Under ten minutes the countdown earns attention; under one it is urgent.
+    expiresText.setAttribute("data-tone", ms < 60000 ? "urgent" : ms < 600000 ? "soon" : "normal");
   }
 
   function formatDuration(ms) {
     var s = Math.ceil(ms / 1000);
     if (s < 60) return s + t("秒");
-    if (s < 3600) return Math.ceil(s / 60) + t(" 分钟");
+    if (s < 3600) return Math.ceil(s / 60) + t("分钟");
     if (s < 86400) {
       var h = s / 3600;
-      return (h < 10 ? h.toFixed(1) : Math.round(h)) + t(" 小时");
+      return (h < 10 ? h.toFixed(1) : Math.round(h)) + t("小时");
     }
     var days = s / 86400;
-    return (days < 10 ? days.toFixed(1) : Math.round(days)) + t(" 天");
+    return (days < 10 ? days.toFixed(1) : Math.round(days)) + t("天");
   }
 
   function shortId(id) {
@@ -3346,12 +4013,39 @@
   }
 
   function setIdleStatus() {
-    setStatus(connected ? "live" : "error");
+    // A live socket with no snapshot yet means the first load is still in
+    // flight — keep saying so instead of claiming "live" over an empty editor.
+    if (connected && !initialSnapshotApplied) {
+      setStatus("pending");
+      return;
+    }
+    // Being connected is not the headline while the room still needs a
+    // password; the lock is what the user can act on.
+    if (roomNeedsUnlock()) {
+      setStatus("locked");
+      return;
+    }
+    if (connected) {
+      setStatus("live");
+      return;
+    }
+    // Never-connected-yet is a loading state; only a socket that was open and
+    // then dropped is a real failure.
+    setStatus(everConnected || !initialSnapshotApplied ? "syncing" : "error");
   }
 
   function updatePeers() {
     if (!peerTabs) return;
     peerTabs.innerHTML = "";
+    // CSS-rendered labels (::before / ::after) cannot be translated in place,
+    // so they read their text from attributes refreshed here.
+    peerTabs.setAttribute("data-empty-label", t("离线"));
+    peerTabs.setAttribute("data-loading-label", t("连接中…"));
+    if (connected || initialSnapshotApplied) {
+      peerTabs.removeAttribute("data-state");
+    } else {
+      peerTabs.setAttribute("data-state", "loading");
+    }
 
     if (connected) {
       peerTabs.appendChild(makePeerTab(CLIENT_ID, colorForPeer(CLIENT_ID), true));
@@ -3369,11 +4063,13 @@
     el.style.setProperty("--peer-color", color || "#888");
     el.textContent = shortId(id);
     el.title = (isSelf ? t("自己 · ") : t("协作者 · ")) + id;
+    if (isSelf) el.setAttribute("data-self-label", t("我"));
     return el;
   }
 
   function setConnected(isOn) {
     connected = !!isOn;
+    if (connected) everConnected = true;
     updatePeers();
   }
 
@@ -3411,28 +4107,91 @@
     ttlValue.value = String(Math.max(1, Math.floor(seconds / unit)));
   }
 
-  // Only two user-facing states: live | error
+  // The editor chip and "connecting" peer label track the first snapshot only:
+  // once any snapshot has been applied the room renders itself, so later
+  // reconnects must not blank the content the user may be reading or editing.
+  var initialSnapshotApplied = false;
+  var loadingSlowTimer = 0;
+
+  // Status has four states: pending (nothing painted yet), syncing (content
+  // is on screen but the live socket has not finished its first handshake),
+  // live, error.
+  // The REST snapshot can paint long before the WebSocket handshake finishes;
+  // reporting that window as "disconnected" showed a red failure state on a
+  // perfectly healthy load.
   function setStatus(kind) {
+    // The pill carries a dot for a glanceable state; the text follows the UI
+    // language. Writing to the inner <span> keeps the dot node in place.
+    var label = kind === "live" ? t("已同步")
+      : kind === "saving" ? t("保存中…")
+        : kind === "locked" ? t("已锁定")
+          : kind === "pending" ? t("加载中…")
+            : kind === "syncing" ? t("连接中…")
+              : t("已断开");
+    if (statusText) {
+      statusText.textContent = label;
+    } else {
+      status.textContent = label;
+    }
     if (kind === "live") {
-      status.textContent = "live";
       status.setAttribute("data-tone", "ok");
+      status.title = t("已连接 · 修改会实时同步给所有打开此房间的人");
       return;
     }
-    status.textContent = "error";
+    if (kind === "locked") {
+      status.setAttribute("data-tone", "locked");
+      status.title = t("房间已锁定 · 输入密码后才能查看和编辑");
+      return;
+    }
+    if (kind === "saving" || kind === "syncing") {
+      status.setAttribute("data-tone", "pending");
+      status.title = kind === "saving"
+        ? t("正在保存修改")
+        : t("内容已加载，正在建立实时连接");
+      return;
+    }
+    if (kind === "pending") {
+      status.setAttribute("data-tone", "pending");
+      status.title = "";
+      return;
+    }
     status.setAttribute("data-tone", "err");
+    status.title = t("连接已断开 · 正在重试，修改会先保存在本地");
+  }
+
+  // The loading chip is visible from first paint (see index.html) and is
+  // hidden by hideLoading once a snapshot lands. It tracks the first snapshot
+  // only: later reconnects must not cover content the user is reading.
+
+  function hideLoading() {
+    initialSnapshotApplied = true;
+    window.clearTimeout(loadingSlowTimer);
+    if (loadingOverlay) loadingOverlay.hidden = true;
+    updatePeers();
+  }
+
+  // A slow first snapshot (big room, weak link) keeps the chip honest instead
+  // of leaving it spinning silently: after 8s say it is still working.
+  function armLoadingSlowHint() {
+    window.clearTimeout(loadingSlowTimer);
+    loadingSlowTimer = window.setTimeout(function () {
+      if (initialSnapshotApplied || !loadingText) return;
+      loadingText.textContent = t("加载超时，正在重试…");
+    }, 8000);
   }
 
   // --- Toast notifications (sonner-style, top-center) -------------------------
 
   var toastWrap = null;
+  // Lucide (ISC) glyphs, inlined.
   var TOAST_ICON_OK =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"></path></svg>';
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
   var TOAST_ICON_ERR =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg>';
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>';
   var TOAST_ICON_WARN =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
   var TOAST_ICON_CLOSE =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"></path></svg>';
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 
   function ensureToastWrap() {
     if (toastWrap && toastWrap.parentNode) return toastWrap;
@@ -3493,6 +4252,23 @@
 
   function setupPasswordModal() {
     if (!passwordModal) return;
+    if (confirmCancel) {
+      confirmCancel.addEventListener("click", function () {
+        closeConfirm(false);
+      });
+    }
+    if (confirmOk) {
+      confirmOk.addEventListener("click", function () {
+        closeConfirm(true);
+      });
+    }
+    if (confirmModal) {
+      confirmModal.addEventListener("click", function (e) {
+        if (e.target && e.target.closest && e.target.closest("[data-modal-dismiss]")) {
+          closeConfirm(false);
+        }
+      });
+    }
     if (modalCancel) {
       modalCancel.addEventListener("click", function () {
         closePasswordModal(null);
@@ -3570,6 +4346,8 @@
       if (!hasFiles(e)) return;
       e.preventDefault();
       e.stopPropagation();
+      // Uploading writes to the room, which a read-only visitor may not do.
+      if (blockWhenReadOnly()) return;
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
         promptUploadFiles(e.dataTransfer.files);
       }
@@ -3637,8 +4415,67 @@
     }
   }
 
+  // --- Empty-room hint ------------------------------------------------------
+
+  // The textarea placeholder explains what the box is; a brand-new room really
+  // needs "paste here, then share the link". The hint disappears as soon as
+  // the room has any content, and never blocks clicks into the editor.
+  function updateEmptyHint() {
+    if (!emptyHint) return;
+    var empty = !doc.materialize() && !(content && content.value);
+    // Never compete with the unlock gate: "paste here" makes no sense while
+    // the room is still locked.
+    var show = empty && !previewVisible && !roomNeedsUnlock();
+    emptyHint.hidden = !show;
+    if (appRoot) appRoot.classList.toggle("has-empty-hint", show);
+  }
+
+  function setupRoomLock() {
+    if (roomLockForm) {
+      roomLockForm.addEventListener("submit", submitRoomLock);
+    }
+    if (roomLockSubmit) {
+      roomLockSubmit.addEventListener("click", submitRoomLock);
+    }
+    if (unlockEditBtn) {
+      unlockEditBtn.addEventListener("click", promptEditUnlock);
+    }
+  }
+
+  function setupEmptyHint() {
+    if (emptyPasteBtn) {
+      emptyPasteBtn.addEventListener("click", function () {
+        if (!content) return;
+        content.focus({ preventScroll: true });
+        // Clipboard read needs a user gesture + permission; fall back to
+        // focusing the editor so a manual Cmd+V works right away.
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then(function (text) {
+            if (!text) return;
+            content.focus({ preventScroll: true });
+            document.execCommand("insertText", false, text);
+          }).catch(function () {
+            showToast(t("浏览器未授权读取剪贴板，请按 Ctrl/⌘+V 粘贴"), "warn");
+          });
+        } else {
+          showToast(t("请按 Ctrl/⌘+V 粘贴"), "warn");
+        }
+      });
+    }
+    if (emptyShareBtn) {
+      emptyShareBtn.addEventListener("click", function () {
+        copyText(location.origin + location.pathname, emptyShareBtn);
+      });
+    }
+  }
+
   function setupRoomTitleToggle() {
     if (!roomTitle) return;
+    if (copyRoomBtn) {
+      copyRoomBtn.addEventListener("click", function () {
+        copyText(location.origin + location.pathname, copyRoomBtn);
+      });
+    }
     roomTitle.addEventListener("click", function () {
       roomTitleClickCount++;
       window.clearTimeout(roomTitleClickTimer);
@@ -3759,10 +4596,16 @@
     if (!fileList) return;
     fetch(filesAPIURL, { headers: withRoomPasswordHeaders({ Accept: "application/json" }) })
       .then(function (response) {
+        if (response.status === 401 || response.status === 403) {
+          // Normal while the room gate is up: the server withholds everything
+          // until the password arrives. Retried after unlock.
+          return null;
+        }
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       })
       .then(function (data) {
+        if (!data) return;
         if (typeof data.fileUploadEnabled === "boolean") {
           setFileUploadEnabled(data.fileUploadEnabled);
         }
@@ -4005,6 +4848,46 @@
     var resolve = modalState.resolve;
     modalState = null;
     if (passwordModal) passwordModal.hidden = true;
+    resolve(value);
+  }
+
+  // --- Generic confirm dialog ------------------------------------------------
+  // window.confirm() looked nothing like the rest of the UI and blocked the
+  // main thread; this mirrors the password dialog's styling and flow.
+  var confirmState = null;
+
+  function confirmAction(options) {
+    options = options || {};
+    return new Promise(function (resolve) {
+      if (!confirmModal) {
+        resolve(window.confirm(options.message || ""));
+        return;
+      }
+      if (confirmState) {
+        var prev = confirmState;
+        confirmState = null;
+        prev.resolve(false);
+      }
+      confirmState = { resolve: resolve };
+      if (confirmTitle) confirmTitle.textContent = options.title || "";
+      if (confirmMessage) confirmMessage.textContent = options.message || "";
+      if (confirmOk) {
+        confirmOk.textContent = options.confirmLabel || t("确认");
+        confirmOk.className = options.danger ? "danger-solid" : "primary";
+      }
+      if (confirmCancel) confirmCancel.textContent = options.cancelLabel || t("取消");
+      confirmModal.hidden = false;
+    });
+  }
+
+  function closeConfirm(value) {
+    if (!confirmState) {
+      if (confirmModal) confirmModal.hidden = true;
+      return;
+    }
+    var resolve = confirmState.resolve;
+    confirmState = null;
+    if (confirmModal) confirmModal.hidden = true;
     resolve(value);
   }
 
